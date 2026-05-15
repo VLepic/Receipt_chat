@@ -2,6 +2,7 @@ import httpx
 from fastapi import HTTPException, status
 
 from app.core.config import settings
+from app.services.ollama_auth import ollama_auth
 
 
 class OllamaClient:
@@ -11,9 +12,7 @@ class OllamaClient:
         self.timeout = settings.ollama_timeout_seconds
 
     def _auth(self) -> httpx.Auth | None:
-        if settings.ollama_username and settings.ollama_password:
-            return httpx.DigestAuth(settings.ollama_username, settings.ollama_password)
-        return None
+        return ollama_auth()
 
     async def health(self) -> dict[str, str | bool]:
         try:

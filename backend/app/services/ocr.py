@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.models.document import Document, DocumentFile, DocumentStatus, OcrResult
 from app.models.job import JobKind, JobStatus, ProcessingJob
+from app.services.ollama_auth import ollama_auth
 
 
 @dataclass(frozen=True)
@@ -287,9 +288,7 @@ class OllamaOcrEngine(MultiFileOcrEngine):
         return content.strip()
 
     def _auth(self) -> httpx.Auth | None:
-        if settings.ollama_username and settings.ollama_password:
-            return httpx.DigestAuth(settings.ollama_username, settings.ollama_password)
-        return None
+        return ollama_auth()
 
 
 def create_ocr_engine() -> OcrEngine:

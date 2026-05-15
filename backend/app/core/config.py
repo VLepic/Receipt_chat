@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     ollama_model: str = "phi4"
     ollama_username: str | None = None
     ollama_password: str | None = None
+    ollama_auth_scheme: str = "digest"
     ollama_timeout_seconds: float = 60.0
 
     document_storage_dir: str = "storage/documents"
