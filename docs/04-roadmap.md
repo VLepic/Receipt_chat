@@ -172,7 +172,7 @@ Testy:
 
 Cil: chat umi odpovidat s vyuzitim nahranych dokumentu a odkazovat na jejich detail.
 
-Status: rozpracovano. Prvni implementace pridava tabulku `document_chunks` nad `pgvector`, embedding pres Ollama, automatickou indexaci jednoho semanticky silneho `rag_text` po LLM strukturaci dokladu a zakladni retrieval do chat promptu. V teto verzi se neembeduje cely raw OCR text, ale deterministicky slozeny text ze summary, klicovych poli a polozek.
+Status: rozpracovano. Prvni implementace pridava tabulku `document_chunks` nad `pgvector`, embedding pres Ollama, automatickou indexaci jednoho semanticky silneho `rag_text` po LLM strukturaci dokladu a agentni chat flow, ve kterem model bud odpovi primo, nebo si internim JSON prikazem vyzada hledani v dokladech. V teto verzi se neembeduje cely raw OCR text, ale deterministicky slozeny text ze summary, klicovych poli, polozek a rucnich uzivatelskych aliasu polozek.
 
 Scope:
 
@@ -184,6 +184,8 @@ Scope:
 - Smazani/stale invalidace embeddingu pri zmene souboru dokladu nebo smazani dokladu.
 - Retrieval podle dotazu uzivatele ve stejnem `user_id` scope.
 - Prompt sablona s dokumentovym kontextem pred volanim chat modelu.
+- Interni agentni prikaz `search_documents`, ktery umi vyzadat RAG dotazy a zakladni strukturovane hledani bez vypisu do chatu.
+- Frontend zobrazuje nenapadne stitky `used rag`, `used search`, `direct answer` a pocet zdroju.
 - Citace nebo odkazy na zdrojove dokumenty.
 - Pokud chat mluvi o dokladu, odpoved musi umet vratit odkaz na detail cele "slozky" dokladu.
 - Frontend zobrazi odkazy/citace jako klikatelne prvky do stranky Doklady.
@@ -199,6 +201,8 @@ Testy:
 - Mockovany test prompt builderu, ze do modelu vklada pouze relevantni kontext.
 - Test citaci/odkazu na zdroj a navigace na detail dokladu.
 - Test, ze chat dostane dokumentovy RAG kontext, pokud retrieval vrati relevantni chunk.
+- Hotovo: backend test, ze agent umi vratit primou odpoved bez RAG/search.
+- Hotovo: backend test, ze agent umi vyzadat kombinaci RAG a strukturovaneho hledani a metadata se propisou k odpovedi.
 - Hotovo: backend integrity test, ze pridani dalsiho souboru k dokladu smaze stare OCR/extraction vystupy, invaliduje RAG chunky a zalozi novy OCR job.
 - Hotovo: backend integrity test, ze smazani dokladu vola invalidaci RAG chunku spolu s cleanupem dokumentovych dat.
 

@@ -231,6 +231,138 @@ def test_chat_can_use_top_n_source_strategy(monkeypatch):
     assert source_ids == [first_document_id, second_document_id]
 
 
+def test_chat_agent_can_request_document_search(monkeypatch):
+    rag_document_id = str(uuid.uuid4())
+    structured_document_id = str(uuid.uuid4())
+    captured = {"calls": 0, "rag_queries": [], "structured_queries": []}
+
+    async def fake_rag_search(session, user_id, query):
+        captured["rag_queries"].append(query)
+        return [
+            {
+                "document_id": rag_document_id,
+                "chunk_index": 0,
+                "content": "RAG doklad o hnojivu BAUHAUS za 349 CZK.",
+                "metadata_json": {},
+                "embedding_model": "qwen3-embedding",
+                "distance": 0.1,
+                "filename": "bauhaus.pdf",
+                "summary": "Nákup hnojiva v BAUHAUS.",
+            }
+        ]
+
+    async def fake_structured_search(session, user_id, query):
+        captured["structured_queries"].append(query)
+        return [
+            {
+                "document_id": structured_document_id,
+                "chunk_index": 0,
+                "content": "Structured doklad BAUHAUS TRAV.HNOJIVO BAUHAUS 349 CZK.",
+                "metadata_json": {},
+                "embedding_model": "structured-json",
+                "distance": 0.0,
+                "filename": "bauhaus-structured.pdf",
+                "summary": "Structured nákup hnojiva v BAUHAUS.",
+            }
+        ]
+
+    async def fake_chat(self, messages, model=None):
+        captured["calls"] += 1
+        if captured["calls"] == 1:
+            return """
+            {
+              "action": "search_documents",
+              "search": {
+                "rag_queries": ["cena hnojiva BAUHAUS"],
+                "structured": {
+                  "merchant": "BAUHAUS",
+                  "item": "hnojivo",
+                  "date": {"mode": null, "value": null, "value_to": null},
+                  "amount": {"mode": null, "value": null, "value_to": null}
+                }
+              }
+            }
+            """
+        captured["final_messages"] = messages
+        return "Hnojivo stálo 349 CZK."
+
+    monkeypatch.setattr("app.api.chat.search_document_chunks", fake_rag_search)
+    monkeypatch.setattr("app.api.chat.search_document_structured", fake_structured_search)
+    monkeypatch.setattr("app.api.chat.OllamaClient.chat", fake_chat)
+    email = f"agent-search-{uuid.uuid4()}@example.com"
+
+    with TestClient(app) as client:
+        _register_and_login(client, email)
+        settings_response = client.put(
+            "/api/settings",
+            json={
+                "ocr_processing_model": None,
+                "rag_source_strategy": "top_n",
+                "rag_best_band": 0.08,
+                "rag_top_n": 2,
+            },
+        )
+        create_response = client.post("/api/chat/conversations", json={"title": "Agent search"})
+        response = client.post(
+            f"/api/chat/conversations/{create_response.json()['id']}/messages",
+            json={"content": "Kolik stálo to hnojivo?", "model": "gemma"},
+        )
+
+    assert settings_response.status_code == 200, settings_response.text
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert captured["calls"] == 2
+    assert captured["rag_queries"] == ["cena hnojiva BAUHAUS"]
+    assert captured["structured_queries"] == ["BAUHAUS hnojivo"]
+    assert "Structured doklad BAUHAUS" in captured["final_messages"][0]["content"]
+    assert payload["assistant_message"]["content"] == "Hnojivo stálo 349 CZK."
+    assert payload["assistant_message"]["retrieval"] == {
+        "mode": "hybrid",
+        "used_rag": True,
+        "used_search": True,
+        "source_count": 2,
+    }
+    assert [source["document_id"] for source in payload["assistant_message"]["sources"]] == [
+        structured_document_id,
+        rag_document_id,
+    ]
+
+
+def test_chat_agent_can_answer_without_retrieval(monkeypatch):
+    captured = {"calls": 0}
+
+    async def fake_rag_search(session, user_id, query):
+        raise AssertionError("RAG search should not run for direct agent answer")
+
+    async def fake_chat(self, messages, model=None):
+        captured["calls"] += 1
+        return '{"action":"answer","content":"Ahoj, jak můžu pomoct?"}'
+
+    monkeypatch.setattr("app.api.chat.search_document_chunks", fake_rag_search)
+    monkeypatch.setattr("app.api.chat.OllamaClient.chat", fake_chat)
+    email = f"agent-direct-{uuid.uuid4()}@example.com"
+
+    with TestClient(app) as client:
+        _register_and_login(client, email)
+        create_response = client.post("/api/chat/conversations", json={"title": "Agent direct"})
+        response = client.post(
+            f"/api/chat/conversations/{create_response.json()['id']}/messages",
+            json={"content": "Ahoj", "model": "gemma"},
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert captured["calls"] == 1
+    assert payload["assistant_message"]["content"] == "Ahoj, jak můžu pomoct?"
+    assert payload["assistant_message"]["sources"] == []
+    assert payload["assistant_message"]["retrieval"] == {
+        "mode": "none",
+        "used_rag": False,
+        "used_search": False,
+        "source_count": 0,
+    }
+
+
 def test_authenticated_user_can_delete_own_conversation():
     email = f"delete-{uuid.uuid4()}@example.com"
 

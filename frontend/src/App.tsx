@@ -1017,7 +1017,7 @@ export function App() {
         <header className="chat-header">
           <div>
             <p className="eyebrow">Ollama + SpeechCloud</p>
-            <h1>Chat bez RAG</h1>
+            <h1>Chat s doklady</h1>
           </div>
           <div className="header-actions">
             <label className="model-select">
@@ -1069,6 +1069,14 @@ export function App() {
               <article key={message.id} className={`message ${message.role}`}>
                 <span>{message.role === "user" ? "Vy" : message.model ?? "Assistant"}</span>
                 <p>{message.content}</p>
+                {message.role === "assistant" && message.retrieval ? (
+                  <div className="message-retrieval" aria-label="Pouzite vyhledavani">
+                    {message.retrieval.used_rag && <b>used rag</b>}
+                    {message.retrieval.used_search && <b>used search</b>}
+                    {!message.retrieval.used_rag && !message.retrieval.used_search && <b>direct answer</b>}
+                    <b>{message.retrieval.source_count} sources</b>
+                  </div>
+                ) : null}
                 {message.role === "assistant" && message.sources?.length ? (
                   <div className="message-sources" aria-label="Zdroje odpovedi">
                     <b>Zdroje</b>
@@ -1091,7 +1099,7 @@ export function App() {
             <div className="empty-state">
               <Sparkles size={26} />
               <h2>Poslete prvni zpravu.</h2>
-              <p>Odpoved prijde z externi Ollamy. RAG kontext nad doklady se prida v pozdejsi fazi.</p>
+              <p>Odpoved prijde z externi Ollamy a podle potreby pouzije vyhledavani v dokladech.</p>
             </div>
           )}
         </div>

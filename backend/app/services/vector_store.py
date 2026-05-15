@@ -156,6 +156,70 @@ async def search_document_chunks(
     ]
 
 
+async def search_document_structured(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    query: str,
+    limit: int | None = None,
+) -> list[RetrievedChunk]:
+    terms = [term.strip() for term in query.split() if len(term.strip()) > 1][:8]
+    if not terms:
+        return []
+
+    where_terms = " AND ".join(f"de.structured_json::text ILIKE :term_{index}" for index in range(len(terms)))
+    params = {
+        "user_id": user_id,
+        "limit": limit or settings.rag_search_limit,
+        **{f"term_{index}": f"%{term}%" for index, term in enumerate(terms)},
+    }
+
+    try:
+        result = await session.execute(
+            text(
+                f"""
+                SELECT
+                    de.document_id::text AS document_id,
+                    0 AS chunk_index,
+                    COALESCE(o.rag_text, de.summary, de.structured_json::text) AS content,
+                    jsonb_build_object(
+                        'document_type', de.structured_json->>'document_type',
+                        'issue_date', de.structured_json->>'issue_date',
+                        'summary', de.summary
+                    ) AS metadata_json,
+                    'structured-json' AS embedding_model,
+                    0.0 AS distance,
+                    d.filename,
+                    de.summary
+                FROM document_extractions de
+                JOIN documents d ON d.id = de.document_id
+                LEFT JOIN ocr_results o ON o.document_id = de.document_id
+                WHERE de.user_id = :user_id
+                  AND {where_terms}
+                ORDER BY de.updated_at DESC
+                LIMIT :limit
+                """
+            ),
+            params,
+        )
+    except Exception:
+        logger.exception("Document structured search failed for user %s", user_id)
+        return []
+
+    return [
+        RetrievedChunk(
+            document_id=row.document_id,
+            chunk_index=row.chunk_index,
+            content=row.content,
+            metadata_json=row.metadata_json,
+            embedding_model=row.embedding_model,
+            distance=float(row.distance),
+            filename=row.filename,
+            summary=row.summary,
+        )
+        for row in result
+    ]
+
+
 def build_chat_context(chunks: list[RetrievedChunk]) -> str:
     if not chunks:
         return ""

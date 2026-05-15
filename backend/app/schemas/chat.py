@@ -11,6 +11,13 @@ class ChatSource(BaseModel):
     distance: float | None = None
 
 
+class ChatRetrieval(BaseModel):
+    mode: str = "none"
+    used_rag: bool = False
+    used_search: bool = False
+    source_count: int = 0
+
+
 class MessageRead(BaseModel):
     id: uuid.UUID
     role: str
@@ -18,6 +25,7 @@ class MessageRead(BaseModel):
     model: str | None
     created_at: datetime
     sources: list[ChatSource] = Field(default_factory=list)
+    retrieval: ChatRetrieval | None = None
 
 
 class ConversationRead(BaseModel):

@@ -1,3 +1,5 @@
+import json
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -22,14 +24,25 @@ from app.schemas.chat import (
     OllamaModelRead,
 )
 from app.services.ollama import OllamaClient
-from app.services.vector_store import build_chat_context, search_document_chunks
+from app.services.vector_store import build_chat_context, search_document_chunks, search_document_structured
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+logger = logging.getLogger("sp2.chat.agent")
+
+
+def _log_preview(value: str, limit: int = 500) -> str:
+    normalized = " ".join(value.split())
+    return normalized if len(normalized) <= limit else f"{normalized[:limit]}..."
 
 
 def _message_sources(message: Message) -> list[ChatSource]:
     sources = (message.metadata_json or {}).get("sources", [])
     return [ChatSource(**source) for source in sources if isinstance(source, dict)]
+
+
+def _message_retrieval(message: Message) -> dict | None:
+    retrieval = (message.metadata_json or {}).get("retrieval")
+    return retrieval if isinstance(retrieval, dict) else None
 
 
 def _message_read(message: Message) -> MessageRead:
@@ -40,6 +53,7 @@ def _message_read(message: Message) -> MessageRead:
         model=message.model,
         created_at=message.created_at,
         sources=_message_sources(message),
+        retrieval=_message_retrieval(message),
     )
 
 
@@ -94,6 +108,153 @@ def _sources_from_chunks(chunks: list[dict], user_settings: UserSettings) -> lis
         if len(sources) >= max_sources:
             break
     return sources
+
+
+def _merge_chunks(*chunk_groups: list[dict]) -> list[dict]:
+    merged = []
+    seen = set()
+    for chunks in chunk_groups:
+        for chunk in chunks:
+            document_id = str(chunk.get("document_id") or "")
+            if not document_id or document_id in seen:
+                continue
+            seen.add(document_id)
+            merged.append(chunk)
+    return merged
+
+
+def _retrieval_metadata(used_rag: bool, used_search: bool, source_count: int) -> dict[str, object]:
+    if used_rag and used_search:
+        mode = "hybrid"
+    elif used_rag:
+        mode = "rag"
+    elif used_search:
+        mode = "search"
+    else:
+        mode = "none"
+    return {
+        "mode": mode,
+        "used_rag": used_rag,
+        "used_search": used_search,
+        "source_count": source_count,
+    }
+
+
+def _parse_agent_command(text: str) -> dict | None:
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        candidate = candidate.strip("`").strip()
+        if candidate.startswith("json"):
+            candidate = candidate[4:].strip()
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            parsed = json.loads(candidate[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _agent_decision_messages(history: list[dict], content: str) -> list[dict]:
+    recent_history = history[-6:]
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Jsi interní rozhodovací vrstva chatu nad osobními doklady. "
+                "Vrať pouze validní JSON bez markdownu. "
+                "Pokud lze odpovědět bez dokladů, vrať {\"action\":\"answer\",\"content\":\"...\"}. "
+                "Pokud dotaz vyžaduje informace z dokladů, vrať "
+                "{\"action\":\"search_documents\",\"search\":{\"rag_queries\":[\"...\"],"
+                "\"structured\":{\"merchant\":null,\"item\":null,\"date\":{\"mode\":null,\"value\":null,\"value_to\":null},"
+                "\"amount\":{\"mode\":null,\"value\":null,\"value_to\":null}}}}. "
+                "U navazujících dotazů použij historii pro vytvoření samostatných hledacích textů. "
+                "Nevymýšlej údaje z dokladů bez výsledků hledání."
+            ),
+        },
+        *recent_history,
+        {"role": "user", "content": content},
+    ]
+
+
+def _rag_queries_from_command(command: dict, fallback: str) -> list[str]:
+    search = command.get("search") if isinstance(command.get("search"), dict) else {}
+    raw_queries = search.get("rag_queries") or search.get("queries") or []
+    if isinstance(raw_queries, str):
+        raw_queries = [raw_queries]
+    queries = [query.strip() for query in raw_queries if isinstance(query, str) and query.strip()]
+    return queries[:3] or [fallback]
+
+
+def _structured_query_from_command(command: dict) -> str:
+    search = command.get("search") if isinstance(command.get("search"), dict) else {}
+    structured = search.get("structured") if isinstance(search.get("structured"), dict) else {}
+    explicit = search.get("structured_query")
+    parts = [explicit.strip()] if isinstance(explicit, str) and explicit.strip() else []
+    for key in ("merchant", "item", "document_type", "invoice_number", "variable_symbol"):
+        value = structured.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    for key in ("date", "amount"):
+        nested = structured.get(key)
+        if isinstance(nested, dict):
+            for nested_key in ("value", "value_to"):
+                value = nested.get(nested_key)
+                if isinstance(value, str) and value.strip():
+                    parts.append(value.strip())
+                elif isinstance(value, int | float):
+                    parts.append(str(value))
+    return " ".join(dict.fromkeys(parts))
+
+
+async def _run_document_retrieval(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    command: dict | None,
+    fallback_query: str,
+) -> tuple[list[dict], dict[str, object]]:
+    if command is None:
+        rag_chunks = await search_document_chunks(session, user_id, fallback_query)
+        return rag_chunks, _retrieval_metadata(used_rag=True, used_search=False, source_count=0)
+
+    rag_queries = _rag_queries_from_command(command, fallback_query)
+    structured_query = _structured_query_from_command(command)
+    rag_results = []
+    for query in rag_queries:
+        rag_results.extend(await search_document_chunks(session, user_id, query))
+    structured_results = await search_document_structured(session, user_id, structured_query) if structured_query else []
+    chunks = _merge_chunks(structured_results, rag_results)
+    return chunks, _retrieval_metadata(
+        used_rag=bool(rag_queries),
+        used_search=bool(structured_query),
+        source_count=0,
+    )
+
+
+def _final_messages(history: list[dict], content: str, rag_context: str, retrieval: dict[str, object]) -> list[dict]:
+    system_content = (
+        "Odpovidej přirozeně česky. "
+        "Syrova UUID ani document_id nikdy neopisuj do textu odpovedi, pokud se na ne uzivatel primo nepta. "
+        "Backend relevantni doklady zobrazi jako klikatelne zdroje pod odpovedi."
+    )
+    if rag_context:
+        system_content = (
+            f"{rag_context}\n\n"
+            "Odpovidej jen podle zdroju, ktere skutecne souvisi s dotazem; nesouvisejici doklady ignoruj. "
+            + system_content
+        )
+    elif retrieval.get("mode") != "none":
+        system_content = (
+            "Vyhledavani v dokladech nevratilo zadny spolehlivy kontext. "
+            "Pokud se uzivatel pta na doklady, rekni, ze v ulozenych dokladech nebyl nalezen relevantni zaznam. "
+            + system_content
+        )
+    return [{"role": "system", "content": system_content}, *history, {"role": "user", "content": content}]
 
 
 async def _get_owned_conversation(
@@ -189,33 +350,87 @@ async def send_message(
     await session.flush()
 
     user_settings = await _get_user_settings(user.id, session)
-    messages = [{"role": message.role, "content": message.content} for message in conversation.messages]
-    rag_chunks = await search_document_chunks(session, user.id, payload.content)
-    rag_context = build_chat_context(rag_chunks)
-    if rag_context:
-        messages.insert(
-            0,
-            {
-                "role": "system",
-                "content": (
-                    f"{rag_context}\n\n"
-                    "Odpovidej jen podle zdroju, ktere skutecne souvisi s dotazem; nesouvisejici doklady ignoruj. "
-                    "Syrova UUID ani document_id nikdy neopisuj do textu odpovedi, pokud se na ne uzivatel primo nepta. "
-                    "Backend relevantni doklady zobrazi jako klikatelne zdroje pod odpovedi."
-                ),
-            },
-        )
-    messages.append({"role": MessageRole.user, "content": payload.content})
-
+    history = [{"role": message.role, "content": message.content} for message in conversation.messages]
     selected_model = payload.model or settings.ollama_model
     client = OllamaClient()
-    assistant_text = await client.chat(messages, model=selected_model)
+
+    logger.info(
+        "agent decision start conversation_id=%s user_id=%s model=%s history_messages=%d user_message=%r",
+        conversation.id,
+        user.id,
+        selected_model,
+        len(history),
+        _log_preview(payload.content, 240),
+    )
+    decision_text = await client.chat(_agent_decision_messages(history, payload.content), model=selected_model)
+    logger.info(
+        "agent decision raw conversation_id=%s response=%r",
+        conversation.id,
+        _log_preview(decision_text),
+    )
+    decision = _parse_agent_command(decision_text)
+    rag_chunks: list[dict] = []
+    retrieval = _retrieval_metadata(False, False, 0)
+
+    if decision and decision.get("action") == "answer" and isinstance(decision.get("content"), str):
+        logger.info(
+            "agent decision parsed conversation_id=%s action=answer",
+            conversation.id,
+        )
+        assistant_text = decision["content"]
+        logger.info(
+            "agent direct answer conversation_id=%s response=%r",
+            conversation.id,
+            _log_preview(assistant_text),
+        )
+    else:
+        search_command = decision if decision and decision.get("action") == "search_documents" else None
+        if search_command:
+            rag_queries_for_log = _rag_queries_from_command(search_command, payload.content)
+            structured_query_for_log = _structured_query_from_command(search_command)
+            logger.info(
+                "agent decision parsed conversation_id=%s action=search_documents rag_queries=%s structured_query=%r",
+                conversation.id,
+                rag_queries_for_log,
+                structured_query_for_log,
+            )
+        else:
+            logger.info(
+                "agent decision fallback conversation_id=%s reason=invalid_or_missing_json fallback_query=%r",
+                conversation.id,
+                _log_preview(payload.content, 240),
+            )
+        rag_chunks, retrieval = await _run_document_retrieval(session, user.id, search_command, payload.content)
+        sources = _sources_from_chunks(rag_chunks, user_settings)
+        retrieval["source_count"] = len(sources)
+        logger.info(
+            "agent retrieval finished conversation_id=%s mode=%s used_rag=%s used_search=%s chunks=%d sources=%d",
+            conversation.id,
+            retrieval["mode"],
+            retrieval["used_rag"],
+            retrieval["used_search"],
+            len(rag_chunks),
+            len(sources),
+        )
+        rag_context = build_chat_context(rag_chunks)
+        assistant_text = await client.chat(_final_messages(history, payload.content, rag_context, retrieval), model=selected_model)
+        logger.info(
+            "agent final answer conversation_id=%s response=%r",
+            conversation.id,
+            _log_preview(assistant_text),
+        )
+    
+    if not rag_chunks:
+        sources = []
+    else:
+        sources = _sources_from_chunks(rag_chunks, user_settings)
+        retrieval["source_count"] = len(sources)
     assistant_message = Message(
         conversation_id=conversation.id,
         role=MessageRole.assistant,
         content=assistant_text,
         model=selected_model,
-        metadata_json={"sources": _sources_from_chunks(rag_chunks, user_settings)},
+        metadata_json={"sources": sources, "retrieval": retrieval},
     )
     session.add(assistant_message)
     await session.commit()

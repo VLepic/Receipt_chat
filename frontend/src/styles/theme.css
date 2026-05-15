@@ -999,6 +999,24 @@ button[type="submit"] {
   white-space: pre-wrap;
 }
 
+.message-retrieval {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.65rem;
+}
+
+.message-retrieval b {
+  padding: 0.18rem 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
 .message-sources {
   display: flex;
   flex-wrap: wrap;

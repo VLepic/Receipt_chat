@@ -670,6 +670,8 @@ def test_delete_document_removes_related_state_and_stored_files(monkeypatch, tmp
         client.post(f"/api/documents/{document_id}/extraction/run")
 
         before_delete = _document_integrity_snapshot(document_id)
+        stored_paths = [Path(path) for path in before_delete["file_paths"]]
+        stored_paths_existed_before_delete = bool(stored_paths) and all(path.exists() for path in stored_paths)
         delete_response = client.delete(f"/api/documents/{document_id}")
         read_response = client.get(f"/api/documents/{document_id}")
         jobs_response = client.get(f"/api/documents/{document_id}/jobs")
@@ -678,9 +680,8 @@ def test_delete_document_removes_related_state_and_stored_files(monkeypatch, tmp
     assert before_delete["job_count"] >= 2
     assert before_delete["ocr_count"] == 1
     assert before_delete["extraction_count"] == 1
-    stored_paths = [Path(path) for path in before_delete["file_paths"]]
     assert stored_paths
-    assert all(path.exists() for path in stored_paths)
+    assert stored_paths_existed_before_delete
 
     assert delete_response.status_code == 204, delete_response.text
     assert read_response.status_code == 404

@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -14,6 +15,22 @@ from app.core.errors import register_exception_handlers
 from app.core.middleware import register_request_middleware
 from app.models import conversation, document, job, settings as user_settings, user  # noqa: F401
 from app.schemas.user import UserCreate, UserRead, UserUpdate
+
+
+def configure_logging() -> None:
+    sp2_logger = logging.getLogger("sp2")
+    sp2_logger.setLevel(logging.INFO)
+
+    uvicorn_handlers = logging.getLogger("uvicorn.error").handlers
+    if uvicorn_handlers:
+        sp2_logger.handlers = list(uvicorn_handlers)
+        sp2_logger.propagate = False
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+
+configure_logging()
+logging.getLogger("sp2.api").info("SP2 logging configured")
 
 
 @asynccontextmanager

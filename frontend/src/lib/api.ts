@@ -56,6 +56,12 @@ export type Message = {
   model?: string | null;
   created_at: string;
   sources?: ChatSource[];
+  retrieval?: {
+    mode: "none" | "rag" | "search" | "hybrid" | string;
+    used_rag: boolean;
+    used_search: boolean;
+    source_count: number;
+  } | null;
 };
 
 export type ConversationDetail = Conversation & {
