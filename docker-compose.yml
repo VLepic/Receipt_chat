@@ -1,0 +1,138 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: sp2
+      POSTGRES_USER: sp2
+      POSTGRES_PASSWORD: sp2
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sp2 -d sp2"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles:
+      - local-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      APP_NAME: ${APP_NAME:-SP2 Assistant}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      DATABASE_URL: postgresql+asyncpg://sp2:sp2@postgres:5432/sp2
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173","http://127.0.0.1:5173"]}
+      COOKIE_NAME: ${COOKIE_NAME:-sp2_session}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-https://ollama.example.com}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi4}
+      EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
+      OLLAMA_USERNAME: ${OLLAMA_USERNAME:-}
+      OLLAMA_PASSWORD: ${OLLAMA_PASSWORD:-}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-60}
+      EXTRACTION_MODE: ${EXTRACTION_MODE:-vision_hybrid}
+      EXTRACTION_MAX_IMAGES: ${EXTRACTION_MAX_IMAGES:-4}
+      EXTRACTION_IMAGE_MAX_SIDE: ${EXTRACTION_IMAGE_MAX_SIDE:-1800}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-qwen3-embedding:latest}
+      RAG_SEARCH_LIMIT: ${RAG_SEARCH_LIMIT:-5}
+      DOCUMENT_STORAGE_DIR: ${DOCUMENT_STORAGE_DIR:-/app/storage/documents}
+      DOCUMENT_MAX_UPLOAD_BYTES: ${DOCUMENT_MAX_UPLOAD_BYTES:-10485760}
+      OCR_LANGUAGE: ${OCR_LANGUAGE:-ces+eng}
+      OCR_ENGINE: ${OCR_ENGINE:-ollama}
+      OLLAMA_OCR_MODEL: ${OLLAMA_OCR_MODEL:-glm-ocr:latest}
+      OLLAMA_OCR_PROMPT: ${OLLAMA_OCR_PROMPT:-Text Recognition:}
+      OLLAMA_OCR_TIMEOUT_SECONDS: ${OLLAMA_OCR_TIMEOUT_SECONDS:-180}
+      EASYOCR_LANGUAGES: ${EASYOCR_LANGUAGES:-cs,en}
+      EASYOCR_MAX_IMAGE_SIDE: ${EASYOCR_MAX_IMAGE_SIDE:-1800}
+      OCR_WORKER_POLL_SECONDS: ${OCR_WORKER_POLL_SECONDS:-5}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+    ports:
+      - "8000:8000"
+    volumes:
+      - documents_storage:/app/storage/documents
+      - easyocr_models:/root/.EasyOCR
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ocr-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["sh", "-c", "python -m app.core.migrate_compat && alembic upgrade head && python -m app.workers.ocr_worker"]
+    environment:
+      APP_NAME: ${APP_NAME:-SP2 Assistant}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      DATABASE_URL: postgresql+asyncpg://sp2:sp2@postgres:5432/sp2
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-https://ollama.example.com}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi4}
+      EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
+      OLLAMA_USERNAME: ${OLLAMA_USERNAME:-}
+      OLLAMA_PASSWORD: ${OLLAMA_PASSWORD:-}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-60}
+      EXTRACTION_MODE: ${EXTRACTION_MODE:-vision_hybrid}
+      EXTRACTION_MAX_IMAGES: ${EXTRACTION_MAX_IMAGES:-4}
+      EXTRACTION_IMAGE_MAX_SIDE: ${EXTRACTION_IMAGE_MAX_SIDE:-1800}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-qwen3-embedding:latest}
+      RAG_SEARCH_LIMIT: ${RAG_SEARCH_LIMIT:-5}
+      DOCUMENT_STORAGE_DIR: ${DOCUMENT_STORAGE_DIR:-/app/storage/documents}
+      OCR_LANGUAGE: ${OCR_LANGUAGE:-ces+eng}
+      OCR_ENGINE: ${OCR_ENGINE:-ollama}
+      OLLAMA_OCR_MODEL: ${OLLAMA_OCR_MODEL:-glm-ocr:latest}
+      OLLAMA_OCR_PROMPT: ${OLLAMA_OCR_PROMPT:-Text Recognition:}
+      OLLAMA_OCR_TIMEOUT_SECONDS: ${OLLAMA_OCR_TIMEOUT_SECONDS:-180}
+      EASYOCR_LANGUAGES: ${EASYOCR_LANGUAGES:-cs,en}
+      EASYOCR_MAX_IMAGE_SIDE: ${EASYOCR_MAX_IMAGE_SIDE:-1800}
+      OCR_WORKER_POLL_SECONDS: ${OCR_WORKER_POLL_SECONDS:-5}
+    volumes:
+      - documents_storage:/app/storage/documents
+      - easyocr_models:/root/.EasyOCR
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      VITE_PROXY_TARGET: http://backend:8000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+
+  speech-dialog:
+    build:
+      context: .
+      dockerfile: speech-dialog/Dockerfile
+    environment:
+      SPEECH_DIALOG_HOST: ${SPEECH_DIALOG_HOST:-0.0.0.0}
+      SPEECH_DIALOG_PORT: ${SPEECH_DIALOG_PORT:-8888}
+      SPEECH_STATIC_PATH: ${SPEECH_STATIC_PATH:-./static}
+      SPEECH_SYSTEM_PROMPT: ${SPEECH_SYSTEM_PROMPT:-Odpovidej strucne v cestine.}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-https://ollama.example.com}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi4}
+      OLLAMA_USERNAME: ${OLLAMA_USERNAME:-}
+      OLLAMA_PASSWORD: ${OLLAMA_PASSWORD:-}
+    ports:
+      - "8888:8888"
+
+volumes:
+  postgres_data:
+  ollama_data:
+  documents_storage:
+  easyocr_models:

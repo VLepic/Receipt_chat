@@ -1,0 +1,36 @@
+services:
+  backend-test:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://sp2:sp2@postgres-test:5432/sp2_test
+      SECRET_KEY: test-secret
+      OLLAMA_BASE_URL: http://ollama-test:11434
+      DOCUMENT_STORAGE_DIR: /tmp/sp2-test-documents
+      OCR_LANGUAGE: ces+eng
+      OCR_ENGINE: tesseract
+      EASYOCR_LANGUAGES: cs,en
+      EASYOCR_MAX_IMAGE_SIDE: 1800
+    command: ["sh", "-c", "alembic upgrade head && pytest -q"]
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+
+  postgres-test:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: sp2_test
+      POSTGRES_USER: sp2
+      POSTGRES_PASSWORD: sp2
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sp2 -d sp2_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend-test:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    command: ["npm", "test"]

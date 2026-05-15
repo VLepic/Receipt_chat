@@ -1,0 +1,4 @@
+tornado==6.4.2
+PyEventEmitter==1.0.5
+ollama==0.4.5
+httpx==0.27.2
