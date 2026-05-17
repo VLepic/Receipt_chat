@@ -155,6 +155,13 @@ def test_authenticated_user_can_upload_png_document():
         assert files_response.json()[0]["filename"] == "receipt.jpg"
         assert files_response.json()[0]["mime_type"] == "image/png"
 
+        file_id = files_response.json()[0]["id"]
+        download_response = client.get(f"/api/documents/{document['id']}/files/{file_id}/download")
+        assert download_response.status_code == 200, download_response.text
+        assert download_response.headers["content-type"] == "image/png"
+        assert "attachment" in download_response.headers["content-disposition"]
+        assert download_response.content == b"\x89PNG\r\n\x1a\nfake-png-body"
+
 
 def test_user_can_add_and_delete_document_files():
     email = f"multi-file-{uuid.uuid4()}@example.com"

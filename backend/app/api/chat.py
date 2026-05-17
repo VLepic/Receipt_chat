@@ -173,6 +173,9 @@ def _agent_decision_messages(history: list[dict], content: str) -> list[dict]:
                 "{\"action\":\"search_documents\",\"search\":{\"rag_queries\":[\"...\"],"
                 "\"structured\":{\"merchant\":null,\"item\":null,\"date\":{\"mode\":null,\"value\":null,\"value_to\":null},"
                 "\"amount\":{\"mode\":null,\"value\":null,\"value_to\":null}}}}. "
+                "Dotazy na nakupy, uctenky, faktury, ceny, polozky, obchod, datum nakupu, provozovnu, adresu nebo doklad "
+                "vzdy vyzaduji search_documents, i kdyz se odpoved zda byt zrejma z historie chatu. "
+                "Konkretní fakta z dokladu nikdy neodpovidej pouze z historie nebo pameti; nejdriv si vyzadej hledani, aby backend mohl pripojit zdroje. "
                 "U navazujících dotazů použij historii pro vytvoření samostatných hledacích textů. "
                 "Nevymýšlej údaje z dokladů bez výsledků hledání."
             ),

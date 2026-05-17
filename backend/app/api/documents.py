@@ -2,6 +2,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -182,6 +183,35 @@ async def add_document_file(
         if storage_path.exists():
             storage_path.unlink()
         raise
+
+
+@router.get("/{document_id}/files/{file_id}/download")
+async def download_document_file(
+    document_id: uuid.UUID,
+    file_id: uuid.UUID,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+) -> FileResponse:
+    document = await _get_owned_document(document_id, user, session)
+    file_result = await session.execute(
+        select(DocumentFile).where(
+            DocumentFile.id == file_id,
+            DocumentFile.document_id == document.id,
+            DocumentFile.user_id == user.id,
+        )
+    )
+    document_file = file_result.scalar_one_or_none()
+    if document_file is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document file not found")
+
+    storage_path = Path(document_file.storage_path)
+    if not storage_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stored file not found")
+    return FileResponse(
+        path=storage_path,
+        media_type=document_file.mime_type,
+        filename=document_file.filename,
+    )
 
 
 @router.delete("/{document_id}/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)

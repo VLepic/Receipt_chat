@@ -185,6 +185,10 @@ export async function deleteDocumentFile(documentId: string, fileId: string) {
   return api<void>(`/documents/${documentId}/files/${fileId}`, { method: "DELETE" });
 }
 
+export function documentFileDownloadUrl(documentId: string, fileId: string) {
+  return `${API_BASE}/documents/${documentId}/files/${fileId}/download`;
+}
+
 export async function deleteDocument(documentId: string) {
   return api<void>(`/documents/${documentId}`, { method: "DELETE" });
 }
