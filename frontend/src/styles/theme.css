@@ -1052,9 +1052,66 @@ button[type="submit"] {
   text-transform: uppercase;
 }
 
-.message p {
+.markdown-message {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.markdown-message p,
+.markdown-message ul,
+.markdown-message ol,
+.markdown-message pre,
+.markdown-message h3,
+.markdown-message h4,
+.markdown-message h5 {
   margin: 0;
+}
+
+.markdown-message p {
   white-space: pre-wrap;
+}
+
+.markdown-message ul,
+.markdown-message ol {
+  display: grid;
+  gap: 0.25rem;
+  padding-left: 1.25rem;
+}
+
+.markdown-message li {
+  padding-left: 0.1rem;
+}
+
+.markdown-message h3,
+.markdown-message h4,
+.markdown-message h5 {
+  color: var(--text);
+  font-size: 0.98rem;
+  line-height: 1.25;
+}
+
+.markdown-message code {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 0.08rem 0.28rem;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.9em;
+}
+
+.markdown-message pre {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.24);
+  padding: 0.65rem;
+}
+
+.markdown-message pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .message-retrieval {

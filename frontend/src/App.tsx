@@ -14,7 +14,7 @@ import {
   Trash2,
   UploadCloud
 } from "lucide-react";
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   Conversation,
@@ -202,6 +202,137 @@ function updateNestedValue(source: unknown, path: JsonPath, value: unknown): unk
     ...record,
     [head]: updateNestedValue(record[head], tail, value)
   };
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g);
+  return parts.map((part, index) => {
+    const key = `${keyPrefix}-${index}`;
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={key}>{part.slice(1, -1)}</code>;
+    }
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={key}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith("*") && part.endsWith("*")) {
+      return <em key={key}>{part.slice(1, -1)}</em>;
+    }
+    return part;
+  });
+}
+
+function renderMarkdown(content: string): ReactNode {
+  const blocks: ReactNode[] = [];
+  const paragraph: string[] = [];
+  let list: { type: "ul" | "ol"; items: string[] } | null = null;
+  let codeBlock: string[] | null = null;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) {
+      return;
+    }
+    const text = paragraph.join(" ");
+    blocks.push(<p key={`p-${blocks.length}`}>{renderInlineMarkdown(text, `p-${blocks.length}`)}</p>);
+    paragraph.length = 0;
+  };
+
+  const flushList = () => {
+    if (!list) {
+      return;
+    }
+    const Tag = list.type;
+    blocks.push(
+      <Tag key={`list-${blocks.length}`}>
+        {list.items.map((item, index) => (
+          <li key={index}>{renderInlineMarkdown(item, `li-${blocks.length}-${index}`)}</li>
+        ))}
+      </Tag>
+    );
+    list = null;
+  };
+
+  const flushCode = () => {
+    if (!codeBlock) {
+      return;
+    }
+    blocks.push(
+      <pre key={`code-${blocks.length}`}>
+        <code>{codeBlock.join("\n")}</code>
+      </pre>
+    );
+    codeBlock = null;
+  };
+
+  content.split(/\r?\n/).forEach((line) => {
+    if (line.trim().startsWith("```")) {
+      if (codeBlock) {
+        flushCode();
+      } else {
+        flushParagraph();
+        flushList();
+        codeBlock = [];
+      }
+      return;
+    }
+
+    if (codeBlock) {
+      codeBlock.push(line);
+      return;
+    }
+
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      return;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = heading[1].length;
+      const content = renderInlineMarkdown(heading[2], `h-${blocks.length}`);
+      if (level === 1) {
+        blocks.push(<h3 key={`h-${blocks.length}`}>{content}</h3>);
+      } else if (level === 2) {
+        blocks.push(<h4 key={`h-${blocks.length}`}>{content}</h4>);
+      } else {
+        blocks.push(<h5 key={`h-${blocks.length}`}>{content}</h5>);
+      }
+      return;
+    }
+
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    if (bullet) {
+      flushParagraph();
+      if (list?.type !== "ul") {
+        flushList();
+        list = { type: "ul", items: [] };
+      }
+      list.items.push(bullet[1]);
+      return;
+    }
+
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      flushParagraph();
+      if (list?.type !== "ol") {
+        flushList();
+        list = { type: "ol", items: [] };
+      }
+      list.items.push(ordered[1]);
+      return;
+    }
+
+    flushList();
+    paragraph.push(line.trim());
+  });
+
+  flushParagraph();
+  flushList();
+  flushCode();
+
+  return <div className="markdown-message">{blocks.length ? blocks : <p>{content}</p>}</div>;
 }
 
 function nestedString(source: JsonRecord | undefined, path: string[]): string | null {
@@ -1077,7 +1208,7 @@ export function App() {
             activeConversation.messages.map((message) => (
               <article key={message.id} className={`message ${message.role}`}>
                 <span>{message.role === "user" ? "Vy" : message.model ?? "Assistant"}</span>
-                <p>{message.content}</p>
+                {renderMarkdown(message.content)}
                 {message.role === "assistant" && message.retrieval ? (
                   <div className="message-retrieval" aria-label="Pouzite vyhledavani">
                     {message.retrieval.used_rag && <b>used rag</b>}
