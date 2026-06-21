@@ -16,6 +16,8 @@ class UserSettings(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("user.id"), nullable=False, index=True
     )
+    default_chat_model: Mapped[str | None] = mapped_column(String(120), default=None)
+    tts_voice: Mapped[str | None] = mapped_column(String(120), default=None)
     ocr_processing_model: Mapped[str | None] = mapped_column(String(120), default=None)
     rag_source_strategy: Mapped[str] = mapped_column(String(40), default="best_band")
     rag_best_band: Mapped[float] = mapped_column(Float, default=0.08)

@@ -6,6 +6,9 @@ import {
   LogOut,
   MessageSquare,
   Mic,
+  MicOff,
+  PhoneCall,
+  PhoneOff,
   Plus,
   Save,
   Send,
@@ -14,9 +17,19 @@ import {
   Trash2,
   UploadCloud
 } from "lucide-react";
-import { ChangeEvent, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 
 import {
+  ChatSource,
   Conversation,
   ConversationDetail,
   DocumentExtraction,
@@ -28,10 +41,12 @@ import {
   UserSettings,
   addDocumentFile,
   createConversation,
+  createVoiceSession,
   deleteConversation,
   deleteDocument,
   deleteDocumentFile,
   documentFileDownloadUrl,
+  endVoiceSession,
   getDocumentExtraction,
   getDocumentOcr,
   getConversation,
@@ -53,11 +68,40 @@ import {
 } from "./lib/api";
 
 type AuthMode = "login" | "register";
-type VoiceState = "idle" | "listening" | "recognizing" | "thinking" | "speaking" | "error";
+type VoiceState = "idle" | "connecting" | "listening" | "recognizing" | "thinking" | "speaking" | "error" | "ended";
 type AppView = "chat" | "documents" | "settings";
 type DocumentTextView = "overview" | "structured" | "raw" | "ocr";
 type JsonRecord = Record<string, unknown>;
 type JsonPath = Array<string | number>;
+type DialToneController = {
+  context: AudioContext;
+  intervalId: number;
+};
+type VoiceOverlayPosition = { x: number; y: number };
+type VoiceOverlayDrag = VoiceOverlayPosition & { pointerId: number };
+type SpeechCloudClient = {
+  on: (event: string, handler: (payload?: unknown) => void) => void;
+  init: () => void;
+  dm_send_message: (payload: { data: unknown }) => void;
+  tts_stop: () => void;
+  terminate: () => void;
+};
+
+declare global {
+  interface Window {
+    SpeechCloud?: new (options: Record<string, unknown>) => SpeechCloudClient;
+  }
+}
+
+const TTS_VOICES = [
+  { value: "Iva210", label: "Iva" },
+  { value: "Jan210", label: "Jan" },
+  { value: "Jiri210", label: "Jiří" },
+  { value: "Katerina210", label: "Kateřina" },
+  { value: "Radka210", label: "Radka" },
+  { value: "Stanislav210", label: "Stanislav" },
+  { value: "Alena210", label: "Alena" }
+];
 
 const FIELD_LABELS: Record<string, string> = {
   document_type: "Typ dokladu",
@@ -373,6 +417,28 @@ function documentCatalogStatus(document: DocumentItem, extraction: DocumentExtra
   return document.status;
 }
 
+let speechCloudScriptPromise: Promise<void> | null = null;
+
+function loadSpeechCloudScript(): Promise<void> {
+  if (window.SpeechCloud) {
+    return Promise.resolve();
+  }
+  if (speechCloudScriptPromise) {
+    return speechCloudScriptPromise;
+  }
+  const scriptUrl =
+    import.meta.env.VITE_SPEECHCLOUD_SCRIPT_URL ?? "https://speechcloud.kky.zcu.cz:9444/speechcloud-3.0.js";
+  speechCloudScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = scriptUrl;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Nepodarilo se nacist SpeechCloud klienta."));
+    document.head.appendChild(script);
+  });
+  return speechCloudScriptPromise;
+}
+
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
@@ -381,11 +447,20 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+  const [voiceSessionId, setVoiceSessionId] = useState<string | null>(null);
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [voiceAnswer, setVoiceAnswer] = useState("");
+  const [voiceSources, setVoiceSources] = useState<ChatSource[]>([]);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [isVoiceMuted, setIsVoiceMuted] = useState(false);
+  const [voiceOverlayPosition, setVoiceOverlayPosition] = useState<VoiceOverlayPosition | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<ConversationDetail | null>(null);
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
+  const [defaultChatModel, setDefaultChatModel] = useState("");
+  const [ttsVoice, setTtsVoice] = useState("");
   const [ocrProcessingModel, setOcrProcessingModel] = useState("");
   const [ragSourceStrategy, setRagSourceStrategy] = useState<"best_band" | "top_n">("best_band");
   const [ragBestBand, setRagBestBand] = useState("0.08");
@@ -411,6 +486,10 @@ export function App() {
   const [documentTextView, setDocumentTextView] = useState<DocumentTextView>("overview");
   const [structuredDraft, setStructuredDraft] = useState<unknown | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const dialToneRef = useRef<DialToneController | null>(null);
+  const speechCloudRef = useRef<SpeechCloudClient | null>(null);
+  const voiceOverlayRef = useRef<HTMLDivElement | null>(null);
+  const voiceOverlayDragRef = useRef<VoiceOverlayDrag | null>(null);
 
   const activeDocument = useMemo(
     () => documents.find((document) => document.id === activeDocumentId) ?? documents[0] ?? null,
@@ -461,11 +540,13 @@ export function App() {
   const voiceLabel = useMemo(() => {
     const labels: Record<VoiceState, string> = {
       idle: "SpeechCloud pripraven",
+      connecting: "Pripojuji hovor",
       listening: "Posloucham",
       recognizing: "Rozpoznavam",
       thinking: "Model premysli",
       speaking: "Prehravam odpoved",
-      error: "Hlasova chyba"
+      error: "Hlasova chyba",
+      ended: "Hovor ukoncen"
     };
     return labels[voiceState];
   }, [voiceState]);
@@ -477,12 +558,35 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const keepVoiceOverlayVisible = () => {
+      const overlay = voiceOverlayRef.current;
+      if (!overlay) {
+        return;
+      }
+      setVoiceOverlayPosition((current) => {
+        if (!current) {
+          return current;
+        }
+        const margin = 8;
+        return {
+          x: Math.min(Math.max(margin, current.x), Math.max(margin, window.innerWidth - overlay.offsetWidth - margin)),
+          y: Math.min(Math.max(margin, current.y), Math.max(margin, window.innerHeight - overlay.offsetHeight - margin))
+        };
+      });
+    };
+    window.addEventListener("resize", keepVoiceOverlayVisible);
+    return () => window.removeEventListener("resize", keepVoiceOverlayVisible);
+  }, []);
+
+  useEffect(() => {
     if (!user) {
       setConversations([]);
       setActiveConversation(null);
       setModels([]);
       setSelectedModel("");
       setUserSettings(null);
+      setDefaultChatModel("");
+      setTtsVoice("");
       setOcrProcessingModel("");
       setDocuments([]);
       setDocumentExtractions({});
@@ -503,7 +607,12 @@ export function App() {
 
         if (modelResult.status === "fulfilled") {
           setModels(modelResult.value);
-          const defaultModel = modelResult.value.find((model) => model.selected) ?? modelResult.value[0];
+          const configuredModel =
+            settingsResult.status === "fulfilled" ? settingsResult.value.default_chat_model : null;
+          const defaultModel =
+            modelResult.value.find((model) => model.name === configuredModel) ??
+            modelResult.value.find((model) => model.selected) ??
+            modelResult.value[0];
           setSelectedModel(defaultModel?.name ?? "");
         } else {
           setError("Nepodarilo se nacist seznam Ollama modelu.");
@@ -517,6 +626,8 @@ export function App() {
 
         if (settingsResult.status === "fulfilled") {
           setUserSettings(settingsResult.value);
+          setDefaultChatModel(settingsResult.value.default_chat_model ?? "");
+          setTtsVoice(settingsResult.value.tts_voice ?? "");
           setOcrProcessingModel(settingsResult.value.ocr_processing_model ?? "");
           setRagSourceStrategy(settingsResult.value.rag_source_strategy);
           setRagBestBand(String(settingsResult.value.rag_best_band));
@@ -636,6 +747,14 @@ export function App() {
     } finally {
       setIsLoadingChat(false);
     }
+  }
+
+  function promoteConversation(conversation: ConversationDetail) {
+    setActiveConversation(conversation);
+    setConversations((current) => {
+      const rest = current.filter((item) => item.id !== conversation.id);
+      return [conversation, ...rest];
+    });
   }
 
   async function handleNewChat() {
@@ -866,16 +985,25 @@ export function App() {
     setIsSavingSettings(true);
     try {
       const saved = await updateUserSettings({
+        default_chat_model: defaultChatModel.trim() || null,
+        tts_voice: ttsVoice.trim() || null,
         ocr_processing_model: ocrProcessingModel.trim() || null,
         rag_source_strategy: ragSourceStrategy,
         rag_best_band: Number(ragBestBand),
         rag_top_n: Number(ragTopN)
       });
       setUserSettings(saved);
+      setDefaultChatModel(saved.default_chat_model ?? "");
+      setTtsVoice(saved.tts_voice ?? "");
       setOcrProcessingModel(saved.ocr_processing_model ?? "");
       setRagSourceStrategy(saved.rag_source_strategy);
       setRagBestBand(String(saved.rag_best_band));
       setRagTopN(String(saved.rag_top_n));
+      const effectiveChatModel =
+        models.find((model) => model.name === saved.default_chat_model) ??
+        models.find((model) => model.selected) ??
+        models[0];
+      setSelectedModel(effectiveChatModel?.name ?? "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ulozeni nastaveni selhalo");
     } finally {
@@ -900,11 +1028,7 @@ export function App() {
       }
 
       const response = await sendMessage(conversation.id, content, selectedModel || undefined);
-      setActiveConversation(response.conversation);
-      setConversations((current) => {
-        const rest = current.filter((item) => item.id !== response.conversation.id);
-        return [response.conversation, ...rest];
-      });
+      promoteConversation(response.conversation);
       setMessageInput("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Odeslani zpravy selhalo");
@@ -914,6 +1038,282 @@ export function App() {
       setIsSending(false);
     }
     setVoiceState("idle");
+  }
+
+  function stopDialTone() {
+    const controller = dialToneRef.current;
+    if (!controller) {
+      return;
+    }
+    window.clearInterval(controller.intervalId);
+    dialToneRef.current = null;
+    void controller.context.close();
+  }
+
+  function startDialTone() {
+    stopDialTone();
+    const AudioContextConstructor =
+      window.AudioContext ??
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextConstructor) {
+      return;
+    }
+
+    const context = new AudioContextConstructor();
+    const playPulse = () => {
+      if (context.state === "closed") {
+        return;
+      }
+      const now = context.currentTime;
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(425, now);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.035, now + 0.03);
+      gain.gain.setValueAtTime(0.035, now + 0.9);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 1);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(now);
+      oscillator.stop(now + 1.05);
+    };
+
+    void context.resume().then(playPulse);
+    const intervalId = window.setInterval(playPulse, 4_000);
+    dialToneRef.current = { context, intervalId };
+  }
+
+  function handleVoiceStatus(payload: unknown) {
+    const data = asRecord(payload);
+    if (!data || data.type !== "voice_status") {
+      return;
+    }
+    const state = typeof data.state === "string" ? data.state : "";
+    if (state === "muted") {
+      setIsVoiceMuted(true);
+    } else if (state === "unmuted") {
+      setIsVoiceMuted(false);
+      setVoiceState("listening");
+    }
+    if (state === "listening" || state === "error" || state === "ended") {
+      stopDialTone();
+    }
+    if (state === "connecting" || state === "listening" || state === "thinking" || state === "speaking" || state === "error" || state === "ended") {
+      setVoiceState(state);
+    } else if (state === "asr_result") {
+      setVoiceState("recognizing");
+    } else if (state === "assistant_response") {
+      setVoiceState("speaking");
+    }
+    if (typeof data.transcript === "string") {
+      setVoiceTranscript(data.transcript);
+    }
+    if (typeof data.answer === "string") {
+      setVoiceAnswer(data.answer);
+    }
+    if (Array.isArray(data.sources)) {
+      setVoiceSources(data.sources as ChatSource[]);
+    }
+    if (typeof data.message === "string") {
+      if (state === "error") {
+        setVoiceError(data.message);
+      }
+    }
+    const conversation = asRecord(data.conversation);
+    if (conversation) {
+      promoteConversation(conversation as ConversationDetail);
+    }
+  }
+
+  async function handleStartVoiceCall() {
+    if (!user || voiceSessionId) {
+      return;
+    }
+    setActiveView("chat");
+    setError(null);
+    setVoiceError(null);
+    setVoiceTranscript("");
+    setVoiceAnswer("");
+    setVoiceSources([]);
+    setIsVoiceMuted(false);
+    setVoiceState("connecting");
+    startDialTone();
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Prohlížeč nepodporuje přístup k mikrofonu.");
+      }
+      const microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      microphoneStream.getTracks().forEach((track) => track.stop());
+      const session = await createVoiceSession(activeConversation?.id ?? null);
+      setVoiceSessionId(session.voice_session_id);
+      promoteConversation(session.conversation);
+      await loadSpeechCloudScript();
+      if (!window.SpeechCloud) {
+        throw new Error("SpeechCloud klient neni dostupny.");
+      }
+      const speechCloud = new window.SpeechCloud({
+        uri: import.meta.env.VITE_SPEECHCLOUD_MODEL_URI ?? "https://speechcloud.kky.zcu.cz:9443/v1/speechcloud/edu-hds-all",
+        tts: "#voice-audioout",
+        local_dm: import.meta.env.VITE_SPEECH_DIALOG_LOCAL_DM ?? "ws://localhost:8888/ws"
+      });
+      let voiceTokenSent = false;
+      let voiceAttached = false;
+      const sendVoiceToken = (force = false) => {
+        if (voiceTokenSent && !force) {
+          return;
+        }
+        voiceTokenSent = true;
+        speechCloud.dm_send_message({ data: { type: "voice_session", token: session.token } });
+      };
+      const attachTimeout = window.setTimeout(() => {
+        if (!voiceAttached) {
+          stopDialTone();
+          setVoiceError("SpeechCloud se nepodařilo propojit s hlasovým dialogem.");
+          setVoiceState("error");
+        }
+      }, 15_000);
+      const handleSpeechCloudConnectionError = (message: unknown, fallback: string) => {
+        window.clearTimeout(attachTimeout);
+        stopDialTone();
+        const record = asRecord(message);
+        const detail = record?.error ?? record?.text ?? record?.reason ?? record?.status;
+        setVoiceError(detail === undefined || detail === "" ? fallback : `${fallback}: ${String(detail)}`);
+        setVoiceState("error");
+      };
+      speechCloudRef.current = speechCloud;
+      speechCloud.on("ws_connected", () => setVoiceState("connecting"));
+      speechCloud.on("ws_local_dm_connected", () => setVoiceState("connecting"));
+      speechCloud.on("error_init", (message) => {
+        handleSpeechCloudConnectionError(message, "Inicializace SpeechCloudu selhala");
+      });
+      speechCloud.on("ws_error_init", (message) => {
+        handleSpeechCloudConnectionError(message, "Nepodařilo se připojit ke SpeechCloudu");
+      });
+      speechCloud.on("ws_local_dm_error_init", (message) => {
+        handleSpeechCloudConnectionError(message, "Nepodařilo se připojit k hlasovému dialogu");
+      });
+      speechCloud.on("ws_error", (message) => {
+        handleSpeechCloudConnectionError(message, "Spojení se SpeechCloudem selhalo");
+      });
+      speechCloud.on("sc_start_session", sendVoiceToken);
+      speechCloud.on("dm_receive_message", (message) => {
+        const record = asRecord(message);
+        const data = asRecord(record?.data);
+        if (data?.state === "connecting" && !voiceAttached) {
+          sendVoiceToken(true);
+        }
+        if (data?.state === "listening") {
+          voiceAttached = true;
+          window.clearTimeout(attachTimeout);
+        }
+        handleVoiceStatus(record?.data);
+      });
+      speechCloud.on("asr_recognizing", () => {
+        stopDialTone();
+        setVoiceState("listening");
+      });
+      speechCloud.on("asr_result", (message) => {
+        const record = asRecord(message);
+        if (typeof record?.result === "string") {
+          setVoiceTranscript(record.result);
+        }
+      });
+      speechCloud.on("tts_done", () => {
+        setVoiceState((current) => (current === "speaking" ? "listening" : current));
+      });
+      speechCloud.on("ws_closed", () => {
+        window.clearTimeout(attachTimeout);
+        stopDialTone();
+        setIsVoiceMuted(false);
+        setVoiceState((current) => (current === "ended" ? current : "idle"));
+        speechCloudRef.current = null;
+      });
+      speechCloud.on("sc_error", (message) => {
+        window.clearTimeout(attachTimeout);
+        stopDialTone();
+        const record = asRecord(message);
+        setVoiceError(typeof record?.error === "string" ? record.error : "SpeechCloud chyba");
+        setVoiceState("error");
+      });
+      speechCloud.init();
+    } catch (err) {
+      stopDialTone();
+      setVoiceError(err instanceof Error ? err.message : "Spusteni hlasoveho hovoru selhalo");
+      setVoiceState("error");
+    }
+  }
+
+  async function handleEndVoiceCall() {
+    const sessionId = voiceSessionId;
+    stopDialTone();
+    setIsVoiceMuted(false);
+    speechCloudRef.current?.terminate();
+    speechCloudRef.current = null;
+    setVoiceSessionId(null);
+    setVoiceState("ended");
+    if (sessionId) {
+      try {
+        await endVoiceSession(sessionId);
+      } catch (err) {
+        setVoiceError(err instanceof Error ? err.message : "Ukonceni hlasove session selhalo");
+        setVoiceState("error");
+      }
+    }
+  }
+
+  function handleStopVoiceTts() {
+    speechCloudRef.current?.tts_stop();
+  }
+
+  function handleToggleVoiceMute() {
+    const speechCloud = speechCloudRef.current;
+    if (!speechCloud || !voiceSessionId) {
+      return;
+    }
+    const nextMuted = !isVoiceMuted;
+    speechCloud.dm_send_message({
+      data: { type: "voice_control", action: nextMuted ? "mute" : "unmute" }
+    });
+    setIsVoiceMuted(nextMuted);
+  }
+
+  function handleVoiceOverlayPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || !voiceOverlayRef.current) {
+      return;
+    }
+    const bounds = voiceOverlayRef.current.getBoundingClientRect();
+    voiceOverlayDragRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function handleVoiceOverlayPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = voiceOverlayDragRef.current;
+    const overlay = voiceOverlayRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !overlay) {
+      return;
+    }
+    const margin = 8;
+    setVoiceOverlayPosition({
+      x: Math.min(Math.max(margin, event.clientX - drag.x), Math.max(margin, window.innerWidth - overlay.offsetWidth - margin)),
+      y: Math.min(Math.max(margin, event.clientY - drag.y), Math.max(margin, window.innerHeight - overlay.offsetHeight - margin))
+    });
+    event.preventDefault();
+  }
+
+  function handleVoiceOverlayPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    if (voiceOverlayDragRef.current?.pointerId !== event.pointerId) {
+      return;
+    }
+    voiceOverlayDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }
 
   function handleOpenDocumentSource(documentId: string) {
@@ -1179,10 +1579,20 @@ export function App() {
                 )}
               </select>
             </label>
-            <div className={`voice-pill ${voiceState}`}>
+            <button
+              className="voice-call-button"
+              onClick={handleStartVoiceCall}
+              type="button"
+              disabled={voiceState !== "idle" && voiceState !== "ended" && voiceState !== "error"}
+              title="Spustit hlasový hovor"
+            >
+              <PhoneCall size={18} />
+              Hovor
+            </button>
+            <span className={`voice-pill ${voiceState}`} aria-live="polite">
               <Mic size={18} />
               {voiceLabel}
-            </div>
+            </span>
             {activeConversation && (
               <button
                 className="danger-button icon-button"
@@ -1556,6 +1966,62 @@ export function App() {
           <form className="settings-form" onSubmit={handleSaveSettings}>
             <section className="settings-section">
               <div>
+                <h2>Chat</h2>
+                <p>Tento model se automaticky vybere pro textový i hlasový chat.</p>
+              </div>
+              <label className="settings-field">
+                <span>Výchozí model chatu</span>
+                <select
+                  value={defaultChatModel}
+                  onChange={(event) => setDefaultChatModel(event.target.value)}
+                  disabled={isSavingSettings}
+                >
+                  <option value="">Výchozí model serveru</option>
+                  {models.map((model) => (
+                    <option key={model.name} value={model.name}>
+                      {model.name}
+                    </option>
+                  ))}
+                  {defaultChatModel && !models.some((model) => model.name === defaultChatModel) ? (
+                    <option value={defaultChatModel}>{defaultChatModel}</option>
+                  ) : null}
+                </select>
+              </label>
+              <div className="settings-current">
+                <span>Aktuálně uloženo</span>
+                <strong>{userSettings?.default_chat_model ?? "Výchozí model serveru"}</strong>
+              </div>
+            </section>
+            <section className="settings-section">
+              <div>
+                <h2>Hlasový hovor</h2>
+                <p>Zvolený hlas se použije pro uvítání i všechny odpovědi SpeechCloudu.</p>
+              </div>
+              <label className="settings-field">
+                <span>TTS hlas</span>
+                <select
+                  value={ttsVoice}
+                  onChange={(event) => setTtsVoice(event.target.value)}
+                  disabled={isSavingSettings}
+                >
+                  <option value="">Výchozí hlas SpeechCloudu</option>
+                  {TTS_VOICES.map((voice) => (
+                    <option key={voice.value} value={voice.value}>
+                      {voice.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="settings-current">
+                <span>Aktuálně uloženo</span>
+                <strong>
+                  {TTS_VOICES.find((voice) => voice.value === userSettings?.tts_voice)?.label ??
+                    "Výchozí hlas SpeechCloudu"}
+                </strong>
+              </div>
+            </section>
+            <section className="settings-section">
+              <div>
                 <h2>Zpracovani dokumentu</h2>
                 <p>
                   Model pro zpracovani OCR se pouzije pro prevod OCR textu na strukturovany JSON a popisek pro RAG.
@@ -1645,6 +2111,80 @@ export function App() {
           </form>
         </section>
       )}
+      {voiceSessionId || voiceState === "connecting" || voiceState === "error" ? (
+        <div
+          ref={voiceOverlayRef}
+          className="voice-overlay"
+          role="dialog"
+          aria-label="Hlasový hovor"
+          style={
+            voiceOverlayPosition
+              ? { left: voiceOverlayPosition.x, top: voiceOverlayPosition.y, right: "auto", bottom: "auto" }
+              : undefined
+          }
+        >
+          <div
+            className="voice-overlay-head"
+            onPointerDown={handleVoiceOverlayPointerDown}
+            onPointerMove={handleVoiceOverlayPointerMove}
+            onPointerUp={handleVoiceOverlayPointerUp}
+            onPointerCancel={handleVoiceOverlayPointerUp}
+          >
+            <div>
+              <p className="eyebrow">SpeechCloud hovor</p>
+              <h2>{voiceLabel}</h2>
+            </div>
+            <Mic size={22} />
+          </div>
+          <div className="voice-overlay-body">
+            <div>
+              <span>Rozpoznáno</span>
+              <strong>{voiceTranscript || "Čekám na hlasový vstup..."}</strong>
+            </div>
+            <div>
+              <span>Odpověď</span>
+              <p>{voiceAnswer || "Odpověď se zobrazí po zpracování dotazu."}</p>
+            </div>
+            {voiceSources.length ? (
+              <div className="voice-overlay-sources">
+                <span>Zdroje</span>
+                {voiceSources.map((source) => (
+                  <button key={source.document_id} type="button" onClick={() => handleOpenDocumentSource(source.document_id)}>
+                    <FileText size={14} />
+                    {source.title}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {voiceError && <p className="error-text">{voiceError}</p>}
+          </div>
+          <div className="voice-overlay-actions">
+            <button className="ghost-button" type="button" onClick={handleStopVoiceTts}>
+              Stop TTS
+            </button>
+            <button
+              className={`ghost-button icon-button voice-mute-button ${isVoiceMuted ? "active" : ""}`}
+              type="button"
+              onClick={handleToggleVoiceMute}
+              disabled={!voiceSessionId || voiceState === "connecting" || voiceState === "error"}
+              aria-label={isVoiceMuted ? "Zapnout mikrofon" : "Ztlumit mikrofon"}
+              title={isVoiceMuted ? "Zapnout mikrofon" : "Ztlumit mikrofon"}
+            >
+              {isVoiceMuted ? <MicOff size={19} /> : <Mic size={19} />}
+            </button>
+            <button
+              className="danger-button icon-button voice-end-button"
+              type="button"
+              onClick={handleEndVoiceCall}
+              aria-label="Ukončit hovor"
+              title="Ukončit hovor"
+            >
+              <PhoneOff size={19} />
+            </button>
+          </div>
+          <audio id="voice-audioout" />
+        </div>
+      ) : null}
     </main>
   );
 }

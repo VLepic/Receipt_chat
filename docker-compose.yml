@@ -110,6 +110,9 @@ services:
       dockerfile: frontend/Dockerfile
     environment:
       VITE_PROXY_TARGET: http://backend:8000
+      VITE_SPEECHCLOUD_SCRIPT_URL: ${VITE_SPEECHCLOUD_SCRIPT_URL:-https://speechcloud.kky.zcu.cz:9444/speechcloud-3.0.js}
+      VITE_SPEECHCLOUD_MODEL_URI: ${VITE_SPEECHCLOUD_MODEL_URI:-https://speechcloud.kky.zcu.cz:9443/v1/speechcloud/edu-hds-all}
+      VITE_SPEECH_DIALOG_LOCAL_DM: ${VITE_SPEECH_DIALOG_LOCAL_DM:-ws://localhost:8888/ws}
     ports:
       - "5173:5173"
     depends_on:
@@ -124,6 +127,8 @@ services:
       SPEECH_DIALOG_PORT: ${SPEECH_DIALOG_PORT:-8888}
       SPEECH_STATIC_PATH: ${SPEECH_STATIC_PATH:-./static}
       SPEECH_SYSTEM_PROMPT: ${SPEECH_SYSTEM_PROMPT:-Odpovidej strucne v cestine.}
+      BACKEND_API_BASE_URL: ${BACKEND_API_BASE_URL:-http://backend:8000/api}
+      VOICE_ATTACH_TIMEOUT_SECONDS: ${VOICE_ATTACH_TIMEOUT_SECONDS:-30}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-https://ollama.example.com}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-phi4}
       OLLAMA_USERNAME: ${OLLAMA_USERNAME:-}

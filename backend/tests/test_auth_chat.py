@@ -1,4 +1,4 @@
-import uuid
+﻿import uuid
 
 from fastapi.testclient import TestClient
 
@@ -128,7 +128,7 @@ def test_chat_adds_document_rag_context_when_available(monkeypatch):
         captured["messages"] = messages
         return "Sekačka je v dokladu doc-123."
 
-    monkeypatch.setattr("app.api.chat.search_document_chunks", fake_search)
+    monkeypatch.setattr("app.services.chat_agent.search_document_chunks", fake_search)
     monkeypatch.setattr("app.api.chat.OllamaClient.chat", fake_chat)
     email = f"rag-{uuid.uuid4()}@example.com"
 
@@ -204,7 +204,7 @@ def test_chat_can_use_top_n_source_strategy(monkeypatch):
     async def fake_chat(self, messages, model=None):
         return "Top N odpoved."
 
-    monkeypatch.setattr("app.api.chat.search_document_chunks", fake_search)
+    monkeypatch.setattr("app.services.chat_agent.search_document_chunks", fake_search)
     monkeypatch.setattr("app.api.chat.OllamaClient.chat", fake_chat)
     email = f"rag-topn-{uuid.uuid4()}@example.com"
 
@@ -286,8 +286,8 @@ def test_chat_agent_can_request_document_search(monkeypatch):
         captured["final_messages"] = messages
         return "Hnojivo stálo 349 CZK."
 
-    monkeypatch.setattr("app.api.chat.search_document_chunks", fake_rag_search)
-    monkeypatch.setattr("app.api.chat.search_document_structured", fake_structured_search)
+    monkeypatch.setattr("app.services.chat_agent.search_document_chunks", fake_rag_search)
+    monkeypatch.setattr("app.services.chat_agent.search_document_structured", fake_structured_search)
     monkeypatch.setattr("app.api.chat.OllamaClient.chat", fake_chat)
     email = f"agent-search-{uuid.uuid4()}@example.com"
 
@@ -338,7 +338,7 @@ def test_chat_agent_can_answer_without_retrieval(monkeypatch):
         captured["calls"] += 1
         return '{"action":"answer","content":"Ahoj, jak můžu pomoct?"}'
 
-    monkeypatch.setattr("app.api.chat.search_document_chunks", fake_rag_search)
+    monkeypatch.setattr("app.services.chat_agent.search_document_chunks", fake_rag_search)
     monkeypatch.setattr("app.api.chat.OllamaClient.chat", fake_chat)
     email = f"agent-direct-{uuid.uuid4()}@example.com"
 
@@ -435,3 +435,118 @@ def test_validation_errors_have_stable_shape():
     assert payload["detail"] == "Validation error"
     assert payload["error"]["code"] == "validation_error"
     assert payload["error"]["fields"]
+
+
+def test_voice_session_requires_authenticated_user():
+    with TestClient(app) as client:
+        response = client.post("/api/voice/sessions", json={"conversation_id": None})
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "http_401"
+
+
+def test_authenticated_user_can_create_and_attach_voice_session():
+    email = f"voice-create-{uuid.uuid4()}@example.com"
+
+    with TestClient(app) as client:
+        _register_and_login(client, email)
+        settings_response = client.put("/api/settings", json={"tts_voice": "Iva210"})
+        assert settings_response.status_code == 200, settings_response.text
+        create_response = client.post("/api/voice/sessions", json={"conversation_id": None})
+        assert create_response.status_code == 201, create_response.text
+        payload = create_response.json()
+
+        assert payload["token"]
+        assert payload["conversation"]["title"] == "Hlasový hovor"
+        attach_response = client.post(
+            "/api/voice/sessions/attach",
+            headers={"X-Voice-Session-Token": payload["token"]},
+            json={"speechcloud_session_id": "sc-test-session"},
+        )
+
+    assert attach_response.status_code == 200, attach_response.text
+    assert attach_response.json()["voice_session_id"] == payload["voice_session_id"]
+    assert attach_response.json()["conversation_id"] == payload["conversation"]["id"]
+    assert attach_response.json()["tts_voice"] == "Iva210"
+
+
+def test_voice_message_uses_token_conversation_and_chat_flow(monkeypatch):
+    used_models = []
+
+    async def fake_chat(self, messages, model=None):
+        used_models.append(model)
+        return '{"action":"answer","content":"Hlasova odpoved z backendu."}'
+
+    monkeypatch.setattr("app.services.chat_agent.OllamaClient.chat", fake_chat)
+    email = f"voice-message-{uuid.uuid4()}@example.com"
+
+    with TestClient(app) as client:
+        _register_and_login(client, email)
+        settings_response = client.put(
+            "/api/settings",
+            json={"default_chat_model": "voice-default"},
+        )
+        assert settings_response.status_code == 200, settings_response.text
+        assert settings_response.json()["default_chat_model"] == "voice-default"
+        conversation_response = client.post("/api/chat/conversations", json={"title": "Voice active"})
+        voice_response = client.post(
+            "/api/voice/sessions",
+            json={"conversation_id": conversation_response.json()["id"]},
+        )
+        token = voice_response.json()["token"]
+
+    with TestClient(app) as speech_client:
+        response = speech_client.post(
+            "/api/voice/messages",
+            headers={"X-Voice-Session-Token": token},
+            json={"content": "Kolik jsem zaplatil?"},
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["user_message"]["content"] == "Kolik jsem zaplatil?"
+    assert payload["assistant_message"]["content"] == "Hlasova odpoved z backendu."
+    assert used_models and set(used_models) == {"voice-default"}
+    assert [message["role"] for message in payload["conversation"]["messages"]] == ["user", "assistant"]
+    assert payload["conversation"]["id"] == conversation_response.json()["id"]
+
+
+def test_voice_message_rejects_invalid_and_ended_tokens():
+    email = f"voice-token-{uuid.uuid4()}@example.com"
+
+    with TestClient(app) as client:
+        _register_and_login(client, email)
+        voice_response = client.post("/api/voice/sessions", json={"conversation_id": None})
+        session = voice_response.json()
+        invalid_response = client.post(
+            "/api/voice/messages",
+            headers={"X-Voice-Session-Token": "not-a-real-token"},
+            json={"content": "Ahoj"},
+        )
+        end_response = client.post(f"/api/voice/sessions/{session['voice_session_id']}/end")
+        ended_response = client.post(
+            "/api/voice/messages",
+            headers={"X-Voice-Session-Token": session["token"]},
+            json={"content": "Ahoj"},
+        )
+
+    assert invalid_response.status_code == 401
+    assert end_response.status_code == 200, end_response.text
+    assert end_response.json()["status"] == "ended"
+    assert ended_response.status_code == 403
+
+
+def test_user_cannot_end_another_users_voice_session():
+    owner_email = f"voice-owner-{uuid.uuid4()}@example.com"
+    intruder_email = f"voice-intruder-{uuid.uuid4()}@example.com"
+
+    with TestClient(app) as owner:
+        _register_and_login(owner, owner_email)
+        voice_response = owner.post("/api/voice/sessions", json={"conversation_id": None})
+        voice_session_id = voice_response.json()["voice_session_id"]
+
+    with TestClient(app) as intruder:
+        _register_and_login(intruder, intruder_email)
+        response = intruder.post(f"/api/voice/sessions/{voice_session_id}/end")
+
+    assert response.status_code == 404

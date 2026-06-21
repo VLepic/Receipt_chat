@@ -5,6 +5,15 @@ from app.core.config import settings
 from app.services.ollama_auth import ollama_auth
 
 
+def _ollama_error_detail(response: httpx.Response) -> str | None:
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    detail = (payload.get("error") or payload.get("detail")) if isinstance(payload, dict) else None
+    return str(detail)[:500] if detail else None
+
+
 class OllamaClient:
     def __init__(self) -> None:
         self.base_url = settings.ollama_base_url.rstrip("/")
@@ -33,6 +42,12 @@ class OllamaClient:
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail="Ollama timeout",
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            detail = _ollama_error_detail(exc.response)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Ollama server error: {detail}" if detail else "Ollama server error",
             ) from exc
         except httpx.HTTPError as exc:
             raise HTTPException(
@@ -67,6 +82,12 @@ class OllamaClient:
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail="Ollama timeout",
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            detail = _ollama_error_detail(exc.response)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Ollama server error: {detail}" if detail else "Ollama server error",
             ) from exc
         except httpx.HTTPError as exc:
             raise HTTPException(

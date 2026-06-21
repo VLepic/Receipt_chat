@@ -11,7 +11,8 @@ class Settings:
     ollama_username: str | None = os.getenv("OLLAMA_USERNAME") or None
     ollama_password: str | None = os.getenv("OLLAMA_PASSWORD") or None
     system_prompt: str = os.getenv("SPEECH_SYSTEM_PROMPT", "Odpovidej strucne v cestine.")
+    backend_api_base_url: str = os.getenv("BACKEND_API_BASE_URL", "http://backend:8000/api")
+    voice_attach_timeout_seconds: float = float(os.getenv("VOICE_ATTACH_TIMEOUT_SECONDS", "30"))
 
 
 settings = Settings()
-

@@ -68,6 +68,18 @@ export type ConversationDetail = Conversation & {
   messages: Message[];
 };
 
+export type VoiceSessionCreateResponse = {
+  voice_session_id: string;
+  token: string;
+  conversation: ConversationDetail;
+  expires_at: string;
+};
+
+export type VoiceSessionEndResponse = {
+  voice_session_id: string;
+  status: string;
+};
+
 export type OllamaModel = {
   name: string;
   selected: boolean;
@@ -76,6 +88,8 @@ export type OllamaModel = {
 export type UserSettings = {
   id: string;
   user_id: string;
+  default_chat_model: string | null;
+  tts_voice: string | null;
   ocr_processing_model: string | null;
   rag_source_strategy: "best_band" | "top_n";
   rag_best_band: number;
@@ -251,6 +265,8 @@ export async function getUserSettings() {
 }
 
 export async function updateUserSettings(payload: {
+  default_chat_model: string | null;
+  tts_voice: string | null;
   ocr_processing_model: string | null;
   rag_source_strategy: "best_band" | "top_n";
   rag_best_band: number;
@@ -270,4 +286,17 @@ export async function sendMessage(conversationId: string, content: string, model
       json: { content, model }
     }
   );
+}
+
+export async function createVoiceSession(conversationId?: string | null) {
+  return api<VoiceSessionCreateResponse>("/voice/sessions", {
+    method: "POST",
+    json: { conversation_id: conversationId ?? null }
+  });
+}
+
+export async function endVoiceSession(voiceSessionId: string) {
+  return api<VoiceSessionEndResponse>(`/voice/sessions/${voiceSessionId}/end`, {
+    method: "POST"
+  });
 }
