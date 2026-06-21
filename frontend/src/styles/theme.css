@@ -497,7 +497,8 @@ button[type="submit"] {
 
 .document-detail {
   display: grid;
-  grid-template-rows: auto minmax(220px, 0.9fr) auto auto auto;
+  grid-auto-rows: auto;
+  align-content: start;
   gap: 1rem;
   padding: 1rem;
   overflow: auto;
@@ -536,11 +537,11 @@ button[type="submit"] {
   white-space: nowrap;
 }
 
+.document-preview-stage,
 .document-preview {
   display: grid;
   align-content: start;
   gap: 0.75rem;
-  min-height: 16rem;
   border: 1px dashed rgba(197, 157, 95, 0.4);
   border-radius: 18px;
   background:
@@ -548,6 +549,44 @@ button[type="submit"] {
     rgba(255, 255, 255, 0.04);
   color: var(--muted);
   padding: 1rem;
+}
+
+.document-image-preview {
+  margin: 0;
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.document-image-preview img {
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  max-height: 25vh;
+  object-fit: contain;
+  display: block;
+  justify-self: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.document-image-preview figcaption {
+  color: var(--muted);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.document-preview-placeholder {
+  display: grid;
+  place-items: center;
+  gap: 0.65rem;
+  min-height: 12rem;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.18);
+  text-align: center;
 }
 
 .document-preview-head {
@@ -572,12 +611,11 @@ button[type="submit"] {
 .document-file-list {
   display: grid;
   gap: 0.5rem;
-  min-height: 0;
 }
 
 .document-file-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(5rem, auto) auto auto;
   align-items: center;
   gap: 0.75rem;
   padding: 0.65rem;
@@ -586,15 +624,35 @@ button[type="submit"] {
   background: rgba(255, 255, 255, 0.055);
 }
 
-.document-file-row span {
+.document-file-row.active {
+  border-color: rgba(197, 157, 95, 0.52);
+  background: rgba(197, 157, 95, 0.12);
+}
+
+.document-file-select {
   min-width: 0;
   display: inline-flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 0.5rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+}
+
+.document-file-select span,
+.document-file-row > span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text);
+}
+
+.document-file-row > span {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 .metadata-grid,
@@ -994,9 +1052,66 @@ button[type="submit"] {
   text-transform: uppercase;
 }
 
-.message p {
+.markdown-message {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.markdown-message p,
+.markdown-message ul,
+.markdown-message ol,
+.markdown-message pre,
+.markdown-message h3,
+.markdown-message h4,
+.markdown-message h5 {
   margin: 0;
+}
+
+.markdown-message p {
   white-space: pre-wrap;
+}
+
+.markdown-message ul,
+.markdown-message ol {
+  display: grid;
+  gap: 0.25rem;
+  padding-left: 1.25rem;
+}
+
+.markdown-message li {
+  padding-left: 0.1rem;
+}
+
+.markdown-message h3,
+.markdown-message h4,
+.markdown-message h5 {
+  color: var(--text);
+  font-size: 0.98rem;
+  line-height: 1.25;
+}
+
+.markdown-message code {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.22);
+  padding: 0.08rem 0.28rem;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.9em;
+}
+
+.markdown-message pre {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.24);
+  padding: 0.65rem;
+}
+
+.markdown-message pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .message-retrieval {

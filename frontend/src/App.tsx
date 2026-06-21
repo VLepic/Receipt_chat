@@ -1,6 +1,7 @@
 import {
   Bot,
   Camera,
+  Download,
   FileText,
   LogOut,
   MessageSquare,
@@ -13,7 +14,7 @@ import {
   Trash2,
   UploadCloud
 } from "lucide-react";
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   Conversation,
@@ -30,6 +31,7 @@ import {
   deleteConversation,
   deleteDocument,
   deleteDocumentFile,
+  documentFileDownloadUrl,
   getDocumentExtraction,
   getDocumentOcr,
   getConversation,
@@ -202,6 +204,137 @@ function updateNestedValue(source: unknown, path: JsonPath, value: unknown): unk
   };
 }
 
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g);
+  return parts.map((part, index) => {
+    const key = `${keyPrefix}-${index}`;
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={key}>{part.slice(1, -1)}</code>;
+    }
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={key}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith("*") && part.endsWith("*")) {
+      return <em key={key}>{part.slice(1, -1)}</em>;
+    }
+    return part;
+  });
+}
+
+function renderMarkdown(content: string): ReactNode {
+  const blocks: ReactNode[] = [];
+  const paragraph: string[] = [];
+  let list: { type: "ul" | "ol"; items: string[] } | null = null;
+  let codeBlock: string[] | null = null;
+
+  const flushParagraph = () => {
+    if (!paragraph.length) {
+      return;
+    }
+    const text = paragraph.join(" ");
+    blocks.push(<p key={`p-${blocks.length}`}>{renderInlineMarkdown(text, `p-${blocks.length}`)}</p>);
+    paragraph.length = 0;
+  };
+
+  const flushList = () => {
+    if (!list) {
+      return;
+    }
+    const Tag = list.type;
+    blocks.push(
+      <Tag key={`list-${blocks.length}`}>
+        {list.items.map((item, index) => (
+          <li key={index}>{renderInlineMarkdown(item, `li-${blocks.length}-${index}`)}</li>
+        ))}
+      </Tag>
+    );
+    list = null;
+  };
+
+  const flushCode = () => {
+    if (!codeBlock) {
+      return;
+    }
+    blocks.push(
+      <pre key={`code-${blocks.length}`}>
+        <code>{codeBlock.join("\n")}</code>
+      </pre>
+    );
+    codeBlock = null;
+  };
+
+  content.split(/\r?\n/).forEach((line) => {
+    if (line.trim().startsWith("```")) {
+      if (codeBlock) {
+        flushCode();
+      } else {
+        flushParagraph();
+        flushList();
+        codeBlock = [];
+      }
+      return;
+    }
+
+    if (codeBlock) {
+      codeBlock.push(line);
+      return;
+    }
+
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      return;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = heading[1].length;
+      const content = renderInlineMarkdown(heading[2], `h-${blocks.length}`);
+      if (level === 1) {
+        blocks.push(<h3 key={`h-${blocks.length}`}>{content}</h3>);
+      } else if (level === 2) {
+        blocks.push(<h4 key={`h-${blocks.length}`}>{content}</h4>);
+      } else {
+        blocks.push(<h5 key={`h-${blocks.length}`}>{content}</h5>);
+      }
+      return;
+    }
+
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    if (bullet) {
+      flushParagraph();
+      if (list?.type !== "ul") {
+        flushList();
+        list = { type: "ul", items: [] };
+      }
+      list.items.push(bullet[1]);
+      return;
+    }
+
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      flushParagraph();
+      if (list?.type !== "ol") {
+        flushList();
+        list = { type: "ol", items: [] };
+      }
+      list.items.push(ordered[1]);
+      return;
+    }
+
+    flushList();
+    paragraph.push(line.trim());
+  });
+
+  flushParagraph();
+  flushList();
+  flushCode();
+
+  return <div className="markdown-message">{blocks.length ? blocks : <p>{content}</p>}</div>;
+}
+
 function nestedString(source: JsonRecord | undefined, path: string[]): string | null {
   let current: unknown = source;
   for (const key of path) {
@@ -262,6 +395,7 @@ export function App() {
   const [isLoadingChat, setIsLoadingChat] = useState(false);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [documentFiles, setDocumentFiles] = useState<DocumentFile[]>([]);
+  const [activeDocumentFileId, setActiveDocumentFileId] = useState<string | null>(null);
   const [documentExtractions, setDocumentExtractions] = useState<Record<string, DocumentExtraction>>({});
   const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null);
   const [activeOcrResult, setActiveOcrResult] = useState<OcrResult | null>(null);
@@ -284,6 +418,8 @@ export function App() {
   );
   const activeDocumentTitle = activeDocument ? documentTitle(activeDocument, activeExtraction) : "";
   const activeDocumentDate = formatDateLabel(documentIssueDate(activeExtraction) ?? activeDocument?.created_at);
+  const activeDocumentFile =
+    documentFiles.find((file) => file.id === activeDocumentFileId) ?? documentFiles[0] ?? null;
   const structuredDocument = structuredDraft ?? activeExtraction?.structured_json ?? null;
   const isStructuredDirty =
     activeExtraction !== null &&
@@ -404,12 +540,16 @@ export function App() {
       setActiveExtraction(null);
       setStructuredDraft(null);
       setDocumentFiles([]);
+      setActiveDocumentFileId(null);
       return;
     }
 
     listDocumentFiles(activeDocument.id)
       .then((files) => {
         setDocumentFiles(files);
+        setActiveDocumentFileId((current) =>
+          current && files.some((file) => file.id === current) ? current : files[0]?.id ?? null
+        );
         return getDocumentOcr(activeDocument.id);
       })
       .then((result) => {
@@ -1068,7 +1208,7 @@ export function App() {
             activeConversation.messages.map((message) => (
               <article key={message.id} className={`message ${message.role}`}>
                 <span>{message.role === "user" ? "Vy" : message.model ?? "Assistant"}</span>
-                <p>{message.content}</p>
+                {renderMarkdown(message.content)}
                 {message.role === "assistant" && message.retrieval ? (
                   <div className="message-retrieval" aria-label="Pouzite vyhledavani">
                     {message.retrieval.used_rag && <b>used rag</b>}
@@ -1204,6 +1344,32 @@ export function App() {
                     </div>
                     <strong>{documentCatalogStatus(activeDocument, activeExtraction)}</strong>
                   </header>
+                  {activeDocumentFile ? (
+                    <div className="document-preview-stage">
+                      {activeDocumentFile.mime_type.startsWith("image/") ? (
+                        <figure className="document-image-preview">
+                          <img
+                            src={documentFileDownloadUrl(activeDocument.id, activeDocumentFile.id)}
+                            alt={activeDocumentFile.filename}
+                          />
+                          <figcaption>{activeDocumentFile.filename}</figcaption>
+                        </figure>
+                      ) : (
+                        <div className="document-preview-placeholder">
+                          <FileText size={28} />
+                          <span>{activeDocumentFile.filename}</span>
+                          <a
+                            className="ghost-button"
+                            href={documentFileDownloadUrl(activeDocument.id, activeDocumentFile.id)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Otevrit soubor
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
                   <div className="document-preview">
                     <div className="document-preview-head">
                       <FileText size={32} />
@@ -1215,11 +1381,27 @@ export function App() {
                     <div className="document-file-list">
                       {documentFiles.length ? (
                         documentFiles.map((file) => (
-                          <div className="document-file-row" key={file.id}>
-                            <span>
+                          <div className={`document-file-row ${activeDocumentFile?.id === file.id ? "active" : ""}`} key={file.id}>
+                            <button
+                              className="document-file-select"
+                              onClick={() => setActiveDocumentFileId(file.id)}
+                              type="button"
+                            >
                               <FileText size={16} />
-                              {file.sort_order + 1}. {file.filename}
+                              <span>{file.sort_order + 1}. {file.filename}</span>
+                            </button>
+                            <span>
+                              {file.mime_type}
                             </span>
+                            <a
+                              className="ghost-button icon-button"
+                              href={documentFileDownloadUrl(activeDocument.id, file.id)}
+                              download={file.filename}
+                              aria-label="Stahnout soubor"
+                              title="Stahnout soubor"
+                            >
+                              <Download size={16} />
+                            </a>
                             <button
                               className="danger-button icon-button"
                               onClick={() => handleDeleteDocumentFile(file.id)}
@@ -1233,7 +1415,7 @@ export function App() {
                           </div>
                         ))
                       ) : (
-                        <span>Nahled bude aktivni po doplneni bezpecneho download endpointu.</span>
+                        <span>Zatim bez souboru dokladu.</span>
                       )}
                     </div>
                   </div>
