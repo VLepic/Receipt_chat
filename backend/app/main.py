@@ -8,13 +8,14 @@ from app.api.auth import auth_backend, current_active_user, fastapi_users
 from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
 from app.api.health import router as health_router
+from app.api.inference import router as inference_router
 from app.api.settings import router as settings_router
 from app.api.voice import router as voice_router
 from app.core.config import settings
 from app.core.db import Base, engine
 from app.core.errors import register_exception_handlers
 from app.core.middleware import register_request_middleware
-from app.models import conversation, document, job, settings as user_settings, user, voice  # noqa: F401
+from app.models import conversation, document, inference, job, settings as user_settings, user, voice  # noqa: F401
 from app.schemas.user import UserCreate, UserRead, UserUpdate
 
 
@@ -72,4 +73,5 @@ app.include_router(
 app.include_router(chat_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
+app.include_router(inference_router, prefix="/api")
 app.include_router(voice_router, prefix="/api")

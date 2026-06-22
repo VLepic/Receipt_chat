@@ -21,6 +21,8 @@ class UserSettings(Base):
     ocr_processing_model: Mapped[str | None] = mapped_column(String(120), default=None)
     rag_source_strategy: Mapped[str] = mapped_column(String(40), default="best_band")
     rag_best_band: Mapped[float] = mapped_column(Float, default=0.08)
+    rag_reranker_best_band: Mapped[float] = mapped_column(Float, default=0.10)
+    rag_reranker_min_score: Mapped[float] = mapped_column(Float, default=0.50)
     rag_top_n: Mapped[int] = mapped_column(Integer, default=2)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

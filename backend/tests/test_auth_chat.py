@@ -1,11 +1,41 @@
 ﻿import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import settings
 from app.main import app
+from app.models.settings import UserSettings
+from app.services.chat_agent import sources_from_chunks
 
 
 PASSWORD = "StrongPass123"
+
+
+@pytest.fixture(autouse=True)
+def disable_real_reranker(monkeypatch):
+    async def passthrough(_session, _query, chunks):
+        return chunks, False
+
+    monkeypatch.setattr("app.services.chat_agent.rerank_document_chunks", passthrough)
+
+
+def test_sources_use_reranker_best_band():
+    user_settings = UserSettings(
+        rag_source_strategy="best_band",
+        rag_best_band=0.08,
+        rag_reranker_best_band=0.10,
+        rag_top_n=3,
+    )
+    chunks = [
+        {"document_id": uuid.uuid4(), "filename": "a.pdf", "distance": 0.4, "reranker_score": 0.90},
+        {"document_id": uuid.uuid4(), "filename": "b.pdf", "distance": 0.1, "reranker_score": 0.84},
+        {"document_id": uuid.uuid4(), "filename": "c.pdf", "distance": 0.2, "reranker_score": 0.70},
+    ]
+
+    sources = sources_from_chunks(chunks, user_settings)
+
+    assert [source["filename"] for source in sources] == ["a.pdf", "b.pdf"]
 
 
 def _register_and_login(client: TestClient, email: str) -> None:
@@ -68,11 +98,69 @@ def test_authenticated_user_can_list_ollama_models(monkeypatch):
     assert response.json()[0] == {"name": "llama3.2", "selected": True}
 
 
+def test_inference_configuration_requires_authentication():
+    with TestClient(app) as client:
+        response = client.get("/api/inference")
+
+    assert response.status_code == 401
+
+
+def test_authenticated_user_can_read_and_update_inference_routing(monkeypatch):
+    async def fake_list_models(self):
+        names = ["phi4", settings.rag_embedding_model, settings.rag_reranker_model]
+        return [
+            {"name": name, "selected": name == "phi4"}
+            for name in dict.fromkeys(name for name in names if name)
+        ]
+
+    monkeypatch.setattr("app.api.inference.OllamaClient.list_models", fake_list_models)
+    email = f"inference-{uuid.uuid4()}@example.com"
+
+    with TestClient(app) as client:
+        _register_and_login(client, email)
+        response = client.get("/api/inference")
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["servers"][0]["id"] == "server_1"
+        assert all("phi4" in server["models"] for server in payload["servers"])
+        assert all("base_url" not in server for server in payload["servers"])
+
+        update_response = client.put(
+            "/api/inference",
+            json=payload["routing"],
+        )
+
+    assert update_response.status_code == 200, update_response.text
+
+
+def test_inference_routing_rejects_unconfigured_server(monkeypatch):
+    async def fake_list_models(self):
+        return []
+
+    monkeypatch.setattr("app.api.inference.OllamaClient.list_models", fake_list_models)
+    email = f"inference-invalid-{uuid.uuid4()}@example.com"
+
+    with TestClient(app) as client:
+        _register_and_login(client, email)
+        response = client.put(
+            "/api/inference",
+            json={
+                "chat_server_id": "server_3",
+                "embedding_server_id": "server_1",
+                "reranker_server_id": None,
+                "ocr_server_id": "server_1",
+                "structuring_server_id": "server_1",
+            },
+        )
+
+    assert response.status_code == 422
+
+
 def test_authenticated_user_can_send_message_to_selected_model(monkeypatch):
     async def fake_chat(self, messages, model=None):
         assert model == "llama3.2"
         assert messages[-1]["content"] == "Ahoj"
-        return "Ahoj, jsem testovaci odpoved."
+        return '{"action":"answer","content":"Ahoj, jsem testovaci odpoved."}'
 
     monkeypatch.setattr("app.api.chat.OllamaClient.chat", fake_chat)
     email = f"chat-{uuid.uuid4()}@example.com"
@@ -146,7 +234,7 @@ def test_chat_adds_document_rag_context_when_available(monkeypatch):
     assert captured["messages"][0]["role"] == "system"
     assert "Relevantni doklady" in captured["messages"][0]["content"]
     assert source_document_id in captured["messages"][0]["content"]
-    assert weak_document_id in captured["messages"][0]["content"]
+    assert weak_document_id not in captured["messages"][0]["content"]
     assert "document_id nikdy neopisuj" in captured["messages"][0]["content"]
     assert captured["messages"][-1]["content"] == "Kdy jsem kupoval sekačku?"
     payload = response.json()
@@ -154,12 +242,43 @@ def test_chat_adds_document_rag_context_when_available(monkeypatch):
         {
             "document_id": source_document_id,
             "title": "Faktura HECHT MOTORS za robotickou sekačku.",
-            "filename": "hecht.pdf",
-            "distance": 0.12,
-        }
+                "filename": "hecht.pdf",
+                "distance": 0.12,
+                "reranker_score": None,
+            }
     ]
     assert all(source["document_id"] != weak_document_id for source in payload["assistant_message"]["sources"])
     assert payload["conversation"]["messages"][-1]["sources"][0]["document_id"] == source_document_id
+
+
+def test_document_question_without_sources_does_not_answer_from_history(monkeypatch):
+    captured = {"calls": 0}
+
+    async def fake_search(session, user_id, query):
+        return []
+
+    async def fake_chat(self, messages, model=None):
+        captured["calls"] += 1
+        return '{"action":"search_documents","search":{"rag_queries":["betonový výrobek"],"structured":{}}}'
+
+    monkeypatch.setattr("app.services.chat_agent.search_document_chunks", fake_search)
+    monkeypatch.setattr("app.api.chat.OllamaClient.chat", fake_chat)
+    email = f"no-sources-{uuid.uuid4()}@example.com"
+
+    with TestClient(app) as client:
+        _register_and_login(client, email)
+        conversation = client.post("/api/chat/conversations", json={"title": "No sources"}).json()
+        response = client.post(
+            f"/api/chat/conversations/{conversation['id']}/messages",
+            json={"content": "Koupil jsem něco betonového?", "model": "phi4"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert captured["calls"] == 1
+    assert response.json()["assistant_message"]["content"] == (
+        "V uložených dokladech jsem k tomuto dotazu nenašel relevantní záznam."
+    )
+    assert response.json()["assistant_message"]["sources"] == []
 
 
 def test_chat_can_use_top_n_source_strategy(monkeypatch):
@@ -320,6 +439,8 @@ def test_chat_agent_can_request_document_search(monkeypatch):
         "mode": "hybrid",
         "used_rag": True,
         "used_search": True,
+        "used_reranker": False,
+        "reranker_model": None,
         "source_count": 2,
     }
     assert [source["document_id"] for source in payload["assistant_message"]["sources"]] == [
@@ -359,6 +480,8 @@ def test_chat_agent_can_answer_without_retrieval(monkeypatch):
         "mode": "none",
         "used_rag": False,
         "used_search": False,
+        "used_reranker": False,
+        "reranker_model": None,
         "source_count": 0,
     }
 

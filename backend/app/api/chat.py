@@ -22,6 +22,7 @@ from app.schemas.chat import (
     OllamaModelRead,
 )
 from app.services.chat_agent import generate_chat_agent_response
+from app.services.inference_routing import get_role_server
 from app.services.ollama import OllamaClient
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -98,14 +99,25 @@ async def append_chat_message_pair(
 ) -> tuple[Conversation, Message, Message]:
     user_settings = await get_user_settings(user.id, session)
     selected_model = model or user_settings.default_chat_model or settings.ollama_model
+    chat_client = OllamaClient(await get_role_server(session, "chat"))
 
     await session.execute(select(Conversation.id).where(Conversation.id == conversation.id).with_for_update())
     history_result = await session.execute(
-        select(Message.role, Message.content)
+        select(Message.role, Message.content, Message.metadata_json)
         .where(Message.conversation_id == conversation.id)
         .order_by(Message.sort_order, Message.created_at, Message.id)
     )
-    history = [{"role": row.role, "content": row.content} for row in history_result]
+    history = []
+    for row in history_result:
+        retrieval = (row.metadata_json or {}).get("retrieval")
+        unsupported_document_answer = (
+            row.role == MessageRole.assistant
+            and isinstance(retrieval, dict)
+            and retrieval.get("mode") != "none"
+            and int(retrieval.get("source_count") or 0) == 0
+        )
+        if not unsupported_document_answer:
+            history.append({"role": row.role, "content": row.content})
     sort_order_result = await session.execute(
         select(func.coalesce(func.max(Message.sort_order), -1) + 1).where(
             Message.conversation_id == conversation.id
@@ -130,6 +142,7 @@ async def append_chat_message_pair(
         content=content,
         model=selected_model,
         conversation_id=conversation.id,
+        client=chat_client,
     )
     assistant_message = Message(
         conversation_id=conversation.id,
@@ -166,8 +179,9 @@ async def list_conversations(
 @router.get("/models", response_model=list[OllamaModelRead])
 async def list_models(
     user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
 ) -> list[dict[str, str | bool]]:
-    return await OllamaClient().list_models()
+    return await OllamaClient(await get_role_server(session, "chat")).list_models()
 
 
 @router.post("/conversations", response_model=ConversationDetail, status_code=status.HTTP_201_CREATED)

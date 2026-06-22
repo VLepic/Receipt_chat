@@ -900,16 +900,127 @@ button[type="submit"] {
 .settings-form {
   min-height: 0;
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   align-content: start;
+  align-items: start;
   gap: 1rem;
   overflow: auto;
   padding: 0.25rem;
 }
 
+.inference-settings {
+  max-width: none;
+}
+
+.inference-settings-head,
+.inference-server-head,
+.inference-disabled-role {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.inference-settings-head {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.inference-settings-head h2,
+.inference-settings-head p {
+  margin: 0;
+}
+
+.inference-settings-head p {
+  margin-top: 0.3rem;
+  color: var(--muted);
+}
+
+.inference-server-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.8rem;
+}
+
+.inference-server {
+  min-height: 12rem;
+  padding: 0.85rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.inference-server-head {
+  justify-content: flex-start;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.inference-server-head div,
+.inference-role div,
+.inference-disabled-role div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.inference-server-head span,
+.inference-role span,
+.inference-disabled-role span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.inference-server-head .server-online {
+  color: #55c78a;
+}
+
+.inference-server-head .server-offline {
+  color: #ee7676;
+}
+
+.inference-role-list {
+  display: grid;
+  gap: 0.55rem;
+  padding-top: 0.75rem;
+}
+
+.inference-role {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(7rem, 0.6fr);
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.65rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.045);
+  cursor: grab;
+}
+
+.inference-role:active {
+  cursor: grabbing;
+}
+
+.inference-role select,
+.inference-disabled-role select {
+  min-width: 0;
+}
+
+.inference-role-controls {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.inference-disabled-role {
+  padding: 0.75rem;
+  border: 1px dashed var(--panel-border);
+  border-radius: 8px;
+}
+
 .settings-section {
   display: grid;
   gap: 1rem;
-  max-width: 720px;
+  min-width: 0;
   padding: 1rem;
   border: 1px solid var(--panel-border);
   border-radius: 22px;
@@ -960,6 +1071,7 @@ button[type="submit"] {
 
 .settings-save {
   width: fit-content;
+  grid-column: 1 / -1;
 }
 
 .status-stack {
@@ -1386,6 +1498,24 @@ button[type="submit"] {
 
   .settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .settings-form {
+    grid-template-columns: 1fr;
+  }
+
+  .inference-settings-head,
+  .inference-disabled-role {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .inference-role {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .inference-role-controls {
+    grid-column: 2;
   }
 
   .documents-workspace {

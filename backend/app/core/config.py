@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     ollama_password: str | None = None
     ollama_auth_scheme: str = "digest"
     ollama_timeout_seconds: float = 60.0
+    ollama_server_1_name: str = "Server 1"
+    ollama_server_2_name: str = "Server 2"
+    ollama_server_2_base_url: str | None = None
+    ollama_server_2_username: str | None = None
+    ollama_server_2_password: str | None = None
+    ollama_server_2_auth_scheme: str = "digest"
 
     document_storage_dir: str = "storage/documents"
     document_max_upload_bytes: int = 10 * 1024 * 1024
@@ -42,6 +48,9 @@ class Settings(BaseSettings):
     extraction_max_images: int = 4
     extraction_image_max_side: int = 1800
     rag_embedding_model: str | None = None
+    rag_reranker_model: str | None = None
+    rag_reranker_candidate_limit: int = 10
+    rag_reranker_timeout_seconds: float = 180.0
     rag_search_limit: int = 5
 
 

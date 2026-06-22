@@ -15,6 +15,7 @@ from app.models.document import Document, DocumentExtraction, DocumentFile, OcrR
 from app.models.job import JobKind, JobStatus, ProcessingJob
 from app.models.settings import UserSettings
 from app.services.ollama import OllamaClient
+from app.services.inference_routing import get_role_server
 from app.services.vector_store import index_document_rag_text
 
 
@@ -269,7 +270,7 @@ async def process_extraction_job(
     )
     try:
         prompt = build_extraction_prompt(document, ocr_result)
-        llm_client = client or OllamaClient()
+        llm_client = client or OllamaClient(await get_role_server(session, "structuring"))
         image_payloads = []
         if settings.extraction_mode.strip().lower() == "vision_hybrid":
             image_payloads = build_extraction_image_payloads(document)
@@ -307,7 +308,7 @@ async def process_extraction_job(
         extraction.model = model
         extraction.raw_response = raw_response
         ocr_result.rag_text = build_structured_rag_text(document, ocr_result, structured)
-        rag_indexed = await index_document_rag_text(session, document, ocr_result.rag_text, structured, client=llm_client)
+        rag_indexed = await index_document_rag_text(session, document, ocr_result.rag_text, structured)
         job.status = JobStatus.succeeded
         job.payload = {
             **(job.payload or {}),

@@ -1,8 +1,11 @@
+import math
+
 import httpx
 from fastapi import HTTPException, status
 
 from app.core.config import settings
 from app.services.ollama_auth import ollama_auth
+from app.services.ollama_servers import OllamaServerConfig, get_ollama_server
 
 
 def _ollama_error_detail(response: httpx.Response) -> str | None:
@@ -15,13 +18,14 @@ def _ollama_error_detail(response: httpx.Response) -> str | None:
 
 
 class OllamaClient:
-    def __init__(self) -> None:
-        self.base_url = settings.ollama_base_url.rstrip("/")
+    def __init__(self, server: OllamaServerConfig | None = None) -> None:
+        self.server = server or get_ollama_server("server_1")
+        self.base_url = self.server.base_url
         self.model = settings.ollama_model
         self.timeout = settings.ollama_timeout_seconds
 
     def _auth(self) -> httpx.Auth | None:
-        return ollama_auth()
+        return ollama_auth(self.server)
 
     async def health(self) -> dict[str, str | bool]:
         try:
@@ -38,6 +42,11 @@ class OllamaClient:
                 response = await client.get(f"{self.base_url}/api/tags")
                 response.raise_for_status()
                 data = response.json()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Ollama vrátila neplatný seznam modelů",
+            ) from exc
         except httpx.TimeoutException as exc:
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -142,6 +151,48 @@ class OllamaClient:
                 detail="Ollama returned an empty embedding",
             )
         return [float(value) for value in embedding]
+
+    async def rerank_score(self, query: str, document: str, model: str) -> float:
+        prompt = (
+            "<|im_start|>system\n"
+            "Judge whether the Document meets the requirements based on the Query and the Instruct provided. "
+            'Note that the answer can only be "yes" or "no".<|im_end|>\n'
+            "<|im_start|>user\n"
+            "<Instruct>: Given a Czech user query, retrieve relevant personal documents that answer the query\n"
+            f"<Query>: {query}\n"
+            f"<Document>: {document[:8000]}<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n"
+        )
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "raw": True,
+            "stream": False,
+            "keep_alive": "15m",
+            "options": {"temperature": 0, "num_predict": 4},
+            "logprobs": True,
+            "top_logprobs": 10,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=settings.rag_reranker_timeout_seconds, auth=self._auth()) as client:
+                response = await client.post(f"{self.base_url}/api/generate", json=payload)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.TimeoutException as exc:
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Ollama reranker timeout") from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Ollama reranker server error") from exc
+
+        first_token = (data.get("logprobs") or [{}])[0]
+        alternatives = first_token.get("top_logprobs") or []
+        yes_logs = [float(item["logprob"]) for item in alternatives if str(item.get("token", "")).strip().lower() == "yes"]
+        no_logs = [float(item["logprob"]) for item in alternatives if str(item.get("token", "")).strip().lower() == "no"]
+        if yes_logs and no_logs:
+            yes_probability = sum(math.exp(value) for value in yes_logs)
+            no_probability = sum(math.exp(value) for value in no_logs)
+            return yes_probability / (yes_probability + no_probability)
+
+        return 1.0 if str(data.get("response", "")).strip().lower().startswith("yes") else 0.0
 
     async def extract_json(self, prompt: str, model: str | None = None) -> str:
         return await self.chat(

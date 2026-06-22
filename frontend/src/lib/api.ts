@@ -47,6 +47,7 @@ export type ChatSource = {
   title: string;
   filename?: string | null;
   distance?: number | null;
+  reranker_score?: number | null;
 };
 
 export type Message = {
@@ -60,6 +61,8 @@ export type Message = {
     mode: "none" | "rag" | "search" | "hybrid" | string;
     used_rag: boolean;
     used_search: boolean;
+    used_reranker?: boolean;
+    reranker_model?: string | null;
     source_count: number;
   } | null;
 };
@@ -85,6 +88,32 @@ export type OllamaModel = {
   selected: boolean;
 };
 
+export type InferenceRole = "chat" | "embedding" | "reranker" | "ocr" | "structuring";
+
+export type InferenceServer = {
+  id: string;
+  name: string;
+  reachable: boolean;
+  models: string[];
+  detail?: string | null;
+};
+
+export type InferenceRouting = {
+  chat_server_id: string;
+  embedding_server_id: string;
+  embedding_model: string | null;
+  reranker_server_id: string | null;
+  reranker_model: string | null;
+  ocr_server_id: string;
+  structuring_server_id: string;
+};
+
+export type InferenceConfiguration = {
+  servers: InferenceServer[];
+  routing: InferenceRouting;
+  reranker_enabled: boolean;
+};
+
 export type UserSettings = {
   id: string;
   user_id: string;
@@ -93,6 +122,8 @@ export type UserSettings = {
   ocr_processing_model: string | null;
   rag_source_strategy: "best_band" | "top_n";
   rag_best_band: number;
+  rag_reranker_best_band: number;
+  rag_reranker_min_score: number;
   rag_top_n: number;
   created_at: string;
   updated_at: string;
@@ -260,6 +291,17 @@ export async function listModels() {
   return api<OllamaModel[]>("/chat/models");
 }
 
+export async function getInferenceConfiguration() {
+  return api<InferenceConfiguration>("/inference");
+}
+
+export async function updateInferenceConfiguration(routing: InferenceRouting) {
+  return api<InferenceConfiguration>("/inference", {
+    method: "PUT",
+    json: routing
+  });
+}
+
 export async function getUserSettings() {
   return api<UserSettings>("/settings");
 }
@@ -270,6 +312,8 @@ export async function updateUserSettings(payload: {
   ocr_processing_model: string | null;
   rag_source_strategy: "best_band" | "top_n";
   rag_best_band: number;
+  rag_reranker_best_band: number;
+  rag_reranker_min_score: number;
   rag_top_n: number;
 }) {
   return api<UserSettings>("/settings", {

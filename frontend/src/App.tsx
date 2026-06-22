@@ -3,6 +3,7 @@ import {
   Camera,
   Download,
   FileText,
+  GripVertical,
   LogOut,
   MessageSquare,
   Mic,
@@ -12,6 +13,7 @@ import {
   Plus,
   Save,
   Send,
+  Server,
   Settings as SettingsIcon,
   Sparkles,
   Trash2,
@@ -19,6 +21,7 @@ import {
 } from "lucide-react";
 import {
   ChangeEvent,
+  DragEvent,
   FormEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
@@ -35,6 +38,9 @@ import {
   DocumentExtraction,
   DocumentFile,
   DocumentItem,
+  InferenceConfiguration,
+  InferenceRole,
+  InferenceRouting,
   OcrResult,
   OllamaModel,
   User,
@@ -49,6 +55,7 @@ import {
   endVoiceSession,
   getDocumentExtraction,
   getDocumentOcr,
+  getInferenceConfiguration,
   getConversation,
   getMe,
   getUserSettings,
@@ -63,6 +70,7 @@ import {
   runDocumentOcr,
   sendMessage,
   updateDocumentExtraction,
+  updateInferenceConfiguration,
   updateUserSettings,
   uploadDocument
 } from "./lib/api";
@@ -79,6 +87,13 @@ type DialToneController = {
 };
 type VoiceOverlayPosition = { x: number; y: number };
 type VoiceOverlayDrag = VoiceOverlayPosition & { pointerId: number };
+const INFERENCE_ROLES: Array<{ id: InferenceRole; label: string; description: string }> = [
+  { id: "chat", label: "Chat", description: "Rozhodování agenta a odpovědi" },
+  { id: "embedding", label: "Embedding", description: "Vektory pro RAG" },
+  { id: "reranker", label: "Reranking", description: "Volitelné přeseřazení kandidátů" },
+  { id: "ocr", label: "OCR", description: "Rozpoznání textu z obrazu" },
+  { id: "structuring", label: "Strukturace", description: "JSON a popisek dokladu" }
+];
 type SpeechCloudClient = {
   on: (event: string, handler: (payload?: unknown) => void) => void;
   init: () => void;
@@ -457,6 +472,9 @@ export function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<ConversationDetail | null>(null);
   const [models, setModels] = useState<OllamaModel[]>([]);
+  const [inferenceConfiguration, setInferenceConfiguration] = useState<InferenceConfiguration | null>(null);
+  const [inferenceRouting, setInferenceRouting] = useState<InferenceRouting | null>(null);
+  const [isSavingInference, setIsSavingInference] = useState(false);
   const [selectedModel, setSelectedModel] = useState("");
   const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
   const [defaultChatModel, setDefaultChatModel] = useState("");
@@ -464,6 +482,8 @@ export function App() {
   const [ocrProcessingModel, setOcrProcessingModel] = useState("");
   const [ragSourceStrategy, setRagSourceStrategy] = useState<"best_band" | "top_n">("best_band");
   const [ragBestBand, setRagBestBand] = useState("0.08");
+  const [ragRerankerBestBand, setRagRerankerBestBand] = useState("0.10");
+  const [ragRerankerMinScore, setRagRerankerMinScore] = useState("0.50");
   const [ragTopN, setRagTopN] = useState("2");
   const [messageInput, setMessageInput] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -495,6 +515,14 @@ export function App() {
     () => documents.find((document) => document.id === activeDocumentId) ?? documents[0] ?? null,
     [activeDocumentId, documents]
   );
+  const structuringModels = useMemo(() => {
+    if (!inferenceConfiguration || !inferenceRouting) {
+      return models.map((model) => model.name);
+    }
+    return (
+      inferenceConfiguration.servers.find((server) => server.id === inferenceRouting.structuring_server_id)?.models ?? []
+    );
+  }, [inferenceConfiguration, inferenceRouting, models]);
   const activeDocumentTitle = activeDocument ? documentTitle(activeDocument, activeExtraction) : "";
   const activeDocumentDate = formatDateLabel(documentIssueDate(activeExtraction) ?? activeDocument?.created_at);
   const activeDocumentFile =
@@ -583,11 +611,15 @@ export function App() {
       setConversations([]);
       setActiveConversation(null);
       setModels([]);
+      setInferenceConfiguration(null);
+      setInferenceRouting(null);
       setSelectedModel("");
       setUserSettings(null);
       setDefaultChatModel("");
       setTtsVoice("");
       setOcrProcessingModel("");
+      setRagRerankerBestBand("0.10");
+      setRagRerankerMinScore("0.50");
       setDocuments([]);
       setDocumentExtractions({});
       setDocumentFiles([]);
@@ -596,8 +628,8 @@ export function App() {
 
     setIsLoadingChat(true);
     setError(null);
-    Promise.allSettled([listConversations(), listModels(), listDocuments(), getUserSettings()])
-      .then(async ([conversationResult, modelResult, documentsResult, settingsResult]) => {
+    Promise.allSettled([listConversations(), listModels(), listDocuments(), getUserSettings(), getInferenceConfiguration()])
+      .then(async ([conversationResult, modelResult, documentsResult, settingsResult, inferenceResult]) => {
         if (conversationResult.status === "fulfilled") {
           setConversations(conversationResult.value);
           if (conversationResult.value[0]) {
@@ -631,7 +663,14 @@ export function App() {
           setOcrProcessingModel(settingsResult.value.ocr_processing_model ?? "");
           setRagSourceStrategy(settingsResult.value.rag_source_strategy);
           setRagBestBand(String(settingsResult.value.rag_best_band));
+          setRagRerankerBestBand(String(settingsResult.value.rag_reranker_best_band));
+          setRagRerankerMinScore(String(settingsResult.value.rag_reranker_min_score));
           setRagTopN(String(settingsResult.value.rag_top_n));
+        }
+
+        if (inferenceResult.status === "fulfilled") {
+          setInferenceConfiguration(inferenceResult.value);
+          setInferenceRouting(inferenceResult.value.routing);
         }
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Nacteni chatu selhalo"))
@@ -990,6 +1029,8 @@ export function App() {
         ocr_processing_model: ocrProcessingModel.trim() || null,
         rag_source_strategy: ragSourceStrategy,
         rag_best_band: Number(ragBestBand),
+        rag_reranker_best_band: Number(ragRerankerBestBand),
+        rag_reranker_min_score: Number(ragRerankerMinScore),
         rag_top_n: Number(ragTopN)
       });
       setUserSettings(saved);
@@ -998,6 +1039,8 @@ export function App() {
       setOcrProcessingModel(saved.ocr_processing_model ?? "");
       setRagSourceStrategy(saved.rag_source_strategy);
       setRagBestBand(String(saved.rag_best_band));
+      setRagRerankerBestBand(String(saved.rag_reranker_best_band));
+      setRagRerankerMinScore(String(saved.rag_reranker_min_score));
       setRagTopN(String(saved.rag_top_n));
       const effectiveChatModel =
         models.find((model) => model.name === saved.default_chat_model) ??
@@ -1011,6 +1054,64 @@ export function App() {
     }
   }
 
+  function assignInferenceRole(role: InferenceRole, serverId: string | null) {
+    setInferenceRouting((current) => {
+      if (!current) {
+        return current;
+      }
+      const next = { ...current, [`${role}_server_id`]: serverId } as InferenceRouting;
+      if (role === "embedding" || role === "reranker") {
+        const modelField = `${role}_model` as "embedding_model" | "reranker_model";
+        const serverModels =
+          inferenceConfiguration?.servers.find((server) => server.id === serverId)?.models ?? [];
+        if (!serverId || !next[modelField] || !serverModels.includes(next[modelField] as string)) {
+          next[modelField] = null;
+        }
+      }
+      return next;
+    });
+  }
+
+  function handleInferenceDrop(event: DragEvent<HTMLDivElement>, serverId: string) {
+    event.preventDefault();
+    const role = event.dataTransfer.getData("application/x-sp2-inference-role") as InferenceRole;
+    if (INFERENCE_ROLES.some((item) => item.id === role)) {
+      assignInferenceRole(role, serverId);
+    }
+  }
+
+  async function handleSaveInference() {
+    if (!inferenceRouting) {
+      return;
+    }
+    setError(null);
+    if (!inferenceRouting.embedding_model) {
+      setError("Vyberte platný embedding model na přiřazeném serveru.");
+      return;
+    }
+    if (inferenceRouting.reranker_server_id && !inferenceRouting.reranker_model) {
+      setError("Vyberte platný reranker model na přiřazeném serveru.");
+      return;
+    }
+    setIsSavingInference(true);
+    try {
+      const saved = await updateInferenceConfiguration(inferenceRouting);
+      setInferenceConfiguration(saved);
+      setInferenceRouting(saved.routing);
+      const refreshedModels = await listModels();
+      setModels(refreshedModels);
+      const effectiveChatModel =
+        refreshedModels.find((model) => model.name === defaultChatModel) ??
+        refreshedModels.find((model) => model.selected) ??
+        refreshedModels[0];
+      setSelectedModel(effectiveChatModel?.name ?? "");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Uložení výpočetních serverů selhalo");
+    } finally {
+      setIsSavingInference(false);
+    }
+  }
+
   async function handleSend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = messageInput.trim();
@@ -1020,7 +1121,6 @@ export function App() {
 
     setError(null);
     setIsSending(true);
-    setVoiceState("thinking");
     try {
       let conversation = activeConversation;
       if (!conversation) {
@@ -1032,12 +1132,10 @@ export function App() {
       setMessageInput("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Odeslani zpravy selhalo");
-      setVoiceState("error");
       return;
     } finally {
       setIsSending(false);
     }
-    setVoiceState("idle");
   }
 
   function stopDialTone() {
@@ -1106,8 +1204,8 @@ export function App() {
     } else if (state === "assistant_response") {
       setVoiceState("speaking");
     }
-    if (typeof data.transcript === "string") {
-      setVoiceTranscript(data.transcript);
+    if (typeof data.transcript === "string" && data.transcript.trim()) {
+      setVoiceTranscript(data.transcript.trim());
     }
     if (typeof data.answer === "string") {
       setVoiceAnswer(data.answer);
@@ -1196,7 +1294,7 @@ export function App() {
       speechCloud.on("ws_error", (message) => {
         handleSpeechCloudConnectionError(message, "Spojení se SpeechCloudem selhalo");
       });
-      speechCloud.on("sc_start_session", sendVoiceToken);
+      speechCloud.on("sc_start_session", () => sendVoiceToken());
       speechCloud.on("dm_receive_message", (message) => {
         const record = asRecord(message);
         const data = asRecord(record?.data);
@@ -1623,6 +1721,7 @@ export function App() {
                   <div className="message-retrieval" aria-label="Pouzite vyhledavani">
                     {message.retrieval.used_rag && <b>used rag</b>}
                     {message.retrieval.used_search && <b>used search</b>}
+                    {message.retrieval.used_reranker && <b>used reranker</b>}
                     {!message.retrieval.used_rag && !message.retrieval.used_search && <b>direct answer</b>}
                     <b>{message.retrieval.source_count} sources</b>
                   </div>
@@ -1964,6 +2063,134 @@ export function App() {
           </header>
 
           <form className="settings-form" onSubmit={handleSaveSettings}>
+          {inferenceConfiguration && inferenceRouting ? (
+            <section className="settings-section inference-settings" aria-labelledby="inference-heading">
+              <div className="inference-settings-head">
+                <div>
+                  <h2 id="inference-heading">Výpočetní servery</h2>
+                  <p>Role lze přetáhnout mezi servery nebo změnit jejich výběr přímo.</p>
+                </div>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={handleSaveInference}
+                  disabled={isSavingInference}
+                >
+                  <Save size={17} />
+                  {isSavingInference ? "Ukládám" : "Uložit routing"}
+                </button>
+              </div>
+              <div className="inference-server-grid">
+                {inferenceConfiguration.servers.map((server) => (
+                  <div
+                    className="inference-server"
+                    key={server.id}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => handleInferenceDrop(event, server.id)}
+                  >
+                    <div className="inference-server-head">
+                      <Server size={19} />
+                      <div>
+                        <strong>{server.name}</strong>
+                        <span className={server.reachable ? "server-online" : "server-offline"}>
+                          {server.reachable ? `Dostupný · ${server.models.length} modelů` : "Nedostupný"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="inference-role-list">
+                      {INFERENCE_ROLES.filter(
+                        (role) =>
+                          inferenceRouting[`${role.id}_server_id` as keyof InferenceRouting] === server.id
+                      ).map((role) => (
+                        <div
+                          className="inference-role"
+                          draggable
+                          key={role.id}
+                          onDragStart={(event) => {
+                            event.dataTransfer.setData("application/x-sp2-inference-role", role.id);
+                            event.dataTransfer.effectAllowed = "move";
+                          }}
+                        >
+                          <GripVertical size={17} aria-hidden="true" />
+                          <div>
+                            <strong>{role.label}</strong>
+                            <span>{role.description}</span>
+                          </div>
+                          <div className="inference-role-controls">
+                            <select
+                              aria-label={`Server pro ${role.label}`}
+                              value={server.id}
+                              onChange={(event) => assignInferenceRole(role.id, event.target.value || null)}
+                            >
+                              {role.id === "reranker" ? <option value="">Vypnuto</option> : null}
+                              {inferenceConfiguration.servers.map((option) => (
+                                <option key={option.id} value={option.id}>
+                                  {option.name}
+                                </option>
+                              ))}
+                            </select>
+                            {role.id === "embedding" || role.id === "reranker" ? (
+                              <select
+                                aria-label={`Model pro ${role.label}`}
+                                value={
+                                  role.id === "embedding"
+                                    ? inferenceRouting.embedding_model ?? ""
+                                    : inferenceRouting.reranker_model ?? ""
+                                }
+                                onChange={(event) =>
+                                  setInferenceRouting((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          [role.id === "embedding" ? "embedding_model" : "reranker_model"]:
+                                            event.target.value || null
+                                        }
+                                      : current
+                                  )
+                                }
+                              >
+                                <option value="">Vyberte model</option>
+                                {server.models.map((model) => (
+                                  <option key={model} value={model}>
+                                    {model}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {!inferenceRouting.reranker_server_id ? (
+                <div className="inference-disabled-role">
+                  <div>
+                    <strong>Reranking je vypnutý</strong>
+                    <span>
+                      {inferenceConfiguration.reranker_enabled
+                        ? "Vyberte server pro jeho zapnutí."
+                        : "Nejdříve nastavte RAG_RERANKER_MODEL v .env."}
+                    </span>
+                  </div>
+                  <select
+                    aria-label="Server pro Reranking"
+                    value=""
+                    disabled={!inferenceConfiguration.reranker_enabled}
+                    onChange={(event) => assignInferenceRole("reranker", event.target.value || null)}
+                  >
+                    <option value="">Vypnuto</option>
+                    {inferenceConfiguration.servers.map((server) => (
+                      <option key={server.id} value={server.id}>
+                        {server.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
             <section className="settings-section">
               <div>
                 <h2>Chat</h2>
@@ -2035,12 +2262,12 @@ export function App() {
                   disabled={isSavingSettings}
                 >
                   <option value="">Vychozi model serveru</option>
-                  {models.map((model) => (
-                    <option key={model.name} value={model.name}>
-                      {model.name}
+                  {structuringModels.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
                     </option>
                   ))}
-                  {ocrProcessingModel && !models.some((model) => model.name === ocrProcessingModel) ? (
+                  {ocrProcessingModel && !structuringModels.includes(ocrProcessingModel) ? (
                     <option value={ocrProcessingModel}>{ocrProcessingModel}</option>
                   ) : null}
                 </select>
@@ -2082,6 +2309,34 @@ export function App() {
                   />
                 </label>
                 <label className="settings-field">
+                  <span>Reranker best band</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ragRerankerBestBand}
+                    onChange={(event) => setRagRerankerBestBand(event.target.value)}
+                    disabled={
+                      isSavingSettings ||
+                      ragSourceStrategy !== "best_band" ||
+                      !inferenceRouting?.reranker_server_id
+                    }
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Minimální reranker skóre</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={ragRerankerMinScore}
+                    onChange={(event) => setRagRerankerMinScore(event.target.value)}
+                    disabled={isSavingSettings || !inferenceRouting?.reranker_server_id}
+                  />
+                </label>
+                <label className="settings-field">
                   <span>Top N</span>
                   <input
                     type="number"
@@ -2099,7 +2354,7 @@ export function App() {
                 <strong>
                   {userSettings?.rag_source_strategy === "top_n"
                     ? `Top ${userSettings.rag_top_n}`
-                    : `Best band ${userSettings?.rag_best_band ?? 0.08}`}
+                    : `Cosine ${userSettings?.rag_best_band ?? 0.08} · reranker ${userSettings?.rag_reranker_best_band ?? 0.10} · minimum ${userSettings?.rag_reranker_min_score ?? 0.50}`}
                 </strong>
               </div>
             </section>

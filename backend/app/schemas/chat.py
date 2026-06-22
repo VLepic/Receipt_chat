@@ -9,12 +9,15 @@ class ChatSource(BaseModel):
     title: str
     filename: str | None = None
     distance: float | None = None
+    reranker_score: float | None = None
 
 
 class ChatRetrieval(BaseModel):
     mode: str = "none"
     used_rag: bool = False
     used_search: bool = False
+    used_reranker: bool = False
+    reranker_model: str | None = None
     source_count: int = 0
 
 

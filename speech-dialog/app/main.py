@@ -13,6 +13,17 @@ DOCUMENT_REFERENCE_RE = re.compile(
 )
 
 
+def sanitize_tts_text(text: str) -> str:
+    text = DOCUMENT_REFERENCE_RE.sub("", text)
+    text = re.sub(r"(?m)^\s*[-*•]\s+", ". ", text)
+    text = re.sub(r"\s+[*•]\s+(?=\S)", ". ", text)
+    text = text.replace("*", "").replace("`", "")
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    text = re.sub(r":\s*\.\s*", ": ", text)
+    text = re.sub(r"([.!?])(?:\s*\.)+", r"\1", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 class AssistantDialog(Dialog):
     tts_voice: str | None = None
 
@@ -27,8 +38,7 @@ class AssistantDialog(Dialog):
         await self.send_message({"type": "voice_status", "state": state, **payload})
 
     async def _speak(self, text: str) -> None:
-        text = DOCUMENT_REFERENCE_RE.sub("", text)
-        text = re.sub(r"\s+([,.;:!?])", r"\1", text).strip()
+        text = sanitize_tts_text(text)
         options = {"voice": self.tts_voice} if self.tts_voice else {}
         await self.synthesize_and_wait(text=text, **options)
 

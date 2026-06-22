@@ -44,6 +44,8 @@ async def update_settings(
     user_settings.ocr_processing_model = payload.ocr_processing_model or None
     user_settings.rag_source_strategy = payload.rag_source_strategy
     user_settings.rag_best_band = payload.rag_best_band
+    user_settings.rag_reranker_best_band = payload.rag_reranker_best_band
+    user_settings.rag_reranker_min_score = payload.rag_reranker_min_score
     user_settings.rag_top_n = payload.rag_top_n
     await session.commit()
     await session.refresh(user_settings)
