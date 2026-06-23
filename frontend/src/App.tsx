@@ -180,6 +180,29 @@ function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
 }
 
+function voiceTranscriptFromPayload(value: unknown, depth = 0): string | null {
+  if (depth > 3) {
+    return null;
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  for (const key of ["transcript", "word_1best", "utterance", "text"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return (
+    voiceTranscriptFromPayload(record.result, depth + 1) ??
+    voiceTranscriptFromPayload(record.data, depth + 1)
+  );
+}
+
 function fieldLabel(key: string | number): string {
   if (typeof key === "number") {
     return `Polozka ${key + 1}`;
@@ -1204,8 +1227,9 @@ export function App() {
     } else if (state === "assistant_response") {
       setVoiceState("speaking");
     }
-    if (typeof data.transcript === "string" && data.transcript.trim()) {
-      setVoiceTranscript(data.transcript.trim());
+    const transcript = voiceTranscriptFromPayload(data);
+    if (transcript) {
+      setVoiceTranscript(transcript);
     }
     if (typeof data.answer === "string") {
       setVoiceAnswer(data.answer);
@@ -1220,6 +1244,14 @@ export function App() {
     }
     const conversation = asRecord(data.conversation);
     if (conversation) {
+      const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+      const lastUserMessage = [...messages]
+        .reverse()
+        .map(asRecord)
+        .find((message) => message?.role === "user" && typeof message.content === "string");
+      if (typeof lastUserMessage?.content === "string" && lastUserMessage.content.trim()) {
+        setVoiceTranscript(lastUserMessage.content.trim());
+      }
       promoteConversation(conversation as ConversationDetail);
     }
   }
@@ -1297,7 +1329,8 @@ export function App() {
       speechCloud.on("sc_start_session", () => sendVoiceToken());
       speechCloud.on("dm_receive_message", (message) => {
         const record = asRecord(message);
-        const data = asRecord(record?.data);
+        const firstData = asRecord(record?.data);
+        const data = firstData?.type === "voice_status" ? firstData : asRecord(firstData?.data);
         if (data?.state === "connecting" && !voiceAttached) {
           sendVoiceToken(true);
         }
@@ -1305,16 +1338,16 @@ export function App() {
           voiceAttached = true;
           window.clearTimeout(attachTimeout);
         }
-        handleVoiceStatus(record?.data);
+        handleVoiceStatus(data ?? record?.data);
       });
       speechCloud.on("asr_recognizing", () => {
         stopDialTone();
         setVoiceState("listening");
       });
       speechCloud.on("asr_result", (message) => {
-        const record = asRecord(message);
-        if (typeof record?.result === "string") {
-          setVoiceTranscript(record.result);
+        const transcript = voiceTranscriptFromPayload(message);
+        if (transcript) {
+          setVoiceTranscript(transcript);
         }
       });
       speechCloud.on("tts_done", () => {
@@ -1554,9 +1587,6 @@ export function App() {
         <section className="auth-panel">
           <p className="eyebrow">SP2 Assistant</p>
           <h1>Hlasovy chat nad doklady</h1>
-          <p className="muted">
-            Prihlaseni je pres secure HTTP-only cookie. Textovy chat se pripojuje na nakonfigurovany Ollama server.
-          </p>
           <form className="auth-form" onSubmit={handleAuth}>
             <label>
               Email
@@ -2393,7 +2423,7 @@ export function App() {
           </div>
           <div className="voice-overlay-body">
             <div>
-              <span>Rozpoznáno</span>
+              <span>Poslední dotaz</span>
               <strong>{voiceTranscript || "Čekám na hlasový vstup..."}</strong>
             </div>
             <div>

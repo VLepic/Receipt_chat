@@ -595,9 +595,11 @@ def test_authenticated_user_can_create_and_attach_voice_session():
 
 def test_voice_message_uses_token_conversation_and_chat_flow(monkeypatch):
     used_models = []
+    system_prompts = []
 
     async def fake_chat(self, messages, model=None):
         used_models.append(model)
+        system_prompts.append(messages[0]["content"])
         return '{"action":"answer","content":"Hlasova odpoved z backendu."}'
 
     monkeypatch.setattr("app.services.chat_agent.OllamaClient.chat", fake_chat)
@@ -630,6 +632,8 @@ def test_voice_message_uses_token_conversation_and_chat_flow(monkeypatch):
     assert payload["user_message"]["content"] == "Kolik jsem zaplatil?"
     assert payload["assistant_message"]["content"] == "Hlasova odpoved z backendu."
     assert used_models and set(used_models) == {"voice-default"}
+    assert any("Odpoved bude prectena nahlas" in prompt for prompt in system_prompts)
+    assert any("Doklad: receipt" in prompt for prompt in system_prompts)
     assert [message["role"] for message in payload["conversation"]["messages"]] == ["user", "assistant"]
     assert payload["conversation"]["id"] == conversation_response.json()["id"]
 

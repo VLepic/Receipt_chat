@@ -96,6 +96,7 @@ async def append_chat_message_pair(
     user: User,
     content: str,
     model: str | None = None,
+    response_mode: str = "chat",
 ) -> tuple[Conversation, Message, Message]:
     user_settings = await get_user_settings(user.id, session)
     selected_model = model or user_settings.default_chat_model or settings.ollama_model
@@ -143,6 +144,7 @@ async def append_chat_message_pair(
         model=selected_model,
         conversation_id=conversation.id,
         client=chat_client,
+        response_mode=response_mode,
     )
     assistant_message = Message(
         conversation_id=conversation.id,
