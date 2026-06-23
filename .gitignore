@@ -9,3 +9,6 @@ dist/
 coverage/
 storage/
 example/
+/docs/10-referat-hlasove-dialogove-systemy.md
+/docs/11-production-deploy.md
+/rag.ipynb

@@ -1,0 +1,149 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sp2}
+      POSTGRES_USER: ${POSTGRES_USER:-sp2}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - ${SP2_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sp2} -d ${POSTGRES_DB:-sp2}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_NAME: ${APP_NAME:-SP2 Assistant}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env.production}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-sp2}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@postgres:5432/${POSTGRES_DB:-sp2}
+      CORS_ORIGINS: ${CORS_ORIGINS:?Set CORS_ORIGINS in .env.production}
+      COOKIE_NAME: ${COOKIE_NAME:-sp2_session}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:?Set OLLAMA_BASE_URL in .env.production}
+      OLLAMA_SERVER_1_NAME: ${OLLAMA_SERVER_1_NAME:-Server 1}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi4}
+      EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
+      OLLAMA_USERNAME: ${OLLAMA_USERNAME:-}
+      OLLAMA_PASSWORD: ${OLLAMA_PASSWORD:-}
+      OLLAMA_AUTH_SCHEME: ${OLLAMA_AUTH_SCHEME:-digest}
+      OLLAMA_SERVER_2_NAME: ${OLLAMA_SERVER_2_NAME:-Server 2}
+      OLLAMA_SERVER_2_BASE_URL: ${OLLAMA_SERVER_2_BASE_URL:-}
+      OLLAMA_SERVER_2_USERNAME: ${OLLAMA_SERVER_2_USERNAME:-}
+      OLLAMA_SERVER_2_PASSWORD: ${OLLAMA_SERVER_2_PASSWORD:-}
+      OLLAMA_SERVER_2_AUTH_SCHEME: ${OLLAMA_SERVER_2_AUTH_SCHEME:-digest}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-60}
+      EXTRACTION_MODE: ${EXTRACTION_MODE:-vision_hybrid}
+      EXTRACTION_MAX_IMAGES: ${EXTRACTION_MAX_IMAGES:-4}
+      EXTRACTION_IMAGE_MAX_SIDE: ${EXTRACTION_IMAGE_MAX_SIDE:-1800}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-qwen3-embedding:latest}
+      RAG_RERANKER_MODEL: ${RAG_RERANKER_MODEL:-}
+      RAG_RERANKER_CANDIDATE_LIMIT: ${RAG_RERANKER_CANDIDATE_LIMIT:-10}
+      RAG_RERANKER_TIMEOUT_SECONDS: ${RAG_RERANKER_TIMEOUT_SECONDS:-180}
+      RAG_SEARCH_LIMIT: ${RAG_SEARCH_LIMIT:-5}
+      DOCUMENT_STORAGE_DIR: /app/storage/documents
+      DOCUMENT_MAX_UPLOAD_BYTES: ${DOCUMENT_MAX_UPLOAD_BYTES:-10485760}
+      OCR_LANGUAGE: ${OCR_LANGUAGE:-ces+eng}
+      OCR_ENGINE: ${OCR_ENGINE:-ollama}
+      OLLAMA_OCR_MODEL: ${OLLAMA_OCR_MODEL:-glm-ocr:latest}
+      OLLAMA_OCR_PROMPT: ${OLLAMA_OCR_PROMPT:-Text Recognition:}
+      OLLAMA_OCR_TIMEOUT_SECONDS: ${OLLAMA_OCR_TIMEOUT_SECONDS:-180}
+      EASYOCR_LANGUAGES: ${EASYOCR_LANGUAGES:-cs,en}
+      EASYOCR_MAX_IMAGE_SIDE: ${EASYOCR_MAX_IMAGE_SIDE:-1800}
+      OCR_WORKER_POLL_SECONDS: ${OCR_WORKER_POLL_SECONDS:-5}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ${SP2_DATA_DIR:-./data}/documents:/app/storage/documents
+      - ${SP2_DATA_DIR:-./data}/easyocr:/root/.EasyOCR
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ocr-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: ["sh", "-c", "python -m app.core.migrate_compat && alembic upgrade head && python -m app.workers.ocr_worker"]
+    environment:
+      APP_NAME: ${APP_NAME:-SP2 Assistant}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env.production}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-sp2}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}@postgres:5432/${POSTGRES_DB:-sp2}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:?Set OLLAMA_BASE_URL in .env.production}
+      OLLAMA_SERVER_1_NAME: ${OLLAMA_SERVER_1_NAME:-Server 1}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi4}
+      EXTRACTION_MODEL: ${EXTRACTION_MODEL:-}
+      OLLAMA_USERNAME: ${OLLAMA_USERNAME:-}
+      OLLAMA_PASSWORD: ${OLLAMA_PASSWORD:-}
+      OLLAMA_AUTH_SCHEME: ${OLLAMA_AUTH_SCHEME:-digest}
+      OLLAMA_SERVER_2_NAME: ${OLLAMA_SERVER_2_NAME:-Server 2}
+      OLLAMA_SERVER_2_BASE_URL: ${OLLAMA_SERVER_2_BASE_URL:-}
+      OLLAMA_SERVER_2_USERNAME: ${OLLAMA_SERVER_2_USERNAME:-}
+      OLLAMA_SERVER_2_PASSWORD: ${OLLAMA_SERVER_2_PASSWORD:-}
+      OLLAMA_SERVER_2_AUTH_SCHEME: ${OLLAMA_SERVER_2_AUTH_SCHEME:-digest}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-60}
+      EXTRACTION_MODE: ${EXTRACTION_MODE:-vision_hybrid}
+      EXTRACTION_MAX_IMAGES: ${EXTRACTION_MAX_IMAGES:-4}
+      EXTRACTION_IMAGE_MAX_SIDE: ${EXTRACTION_IMAGE_MAX_SIDE:-1800}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-qwen3-embedding:latest}
+      RAG_RERANKER_MODEL: ${RAG_RERANKER_MODEL:-}
+      RAG_RERANKER_CANDIDATE_LIMIT: ${RAG_RERANKER_CANDIDATE_LIMIT:-10}
+      RAG_RERANKER_TIMEOUT_SECONDS: ${RAG_RERANKER_TIMEOUT_SECONDS:-180}
+      RAG_SEARCH_LIMIT: ${RAG_SEARCH_LIMIT:-5}
+      DOCUMENT_STORAGE_DIR: /app/storage/documents
+      OCR_LANGUAGE: ${OCR_LANGUAGE:-ces+eng}
+      OCR_ENGINE: ${OCR_ENGINE:-ollama}
+      OLLAMA_OCR_MODEL: ${OLLAMA_OCR_MODEL:-glm-ocr:latest}
+      OLLAMA_OCR_PROMPT: ${OLLAMA_OCR_PROMPT:-Text Recognition:}
+      OLLAMA_OCR_TIMEOUT_SECONDS: ${OLLAMA_OCR_TIMEOUT_SECONDS:-180}
+      EASYOCR_LANGUAGES: ${EASYOCR_LANGUAGES:-cs,en}
+      EASYOCR_MAX_IMAGE_SIDE: ${EASYOCR_MAX_IMAGE_SIDE:-1800}
+      OCR_WORKER_POLL_SECONDS: ${OCR_WORKER_POLL_SECONDS:-5}
+    volumes:
+      - ${SP2_DATA_DIR:-./data}/documents:/app/storage/documents
+      - ${SP2_DATA_DIR:-./data}/easyocr:/root/.EasyOCR
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.prod
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:?Set VITE_API_BASE_URL in .env.production}
+        VITE_SPEECHCLOUD_SCRIPT_URL: ${VITE_SPEECHCLOUD_SCRIPT_URL:-https://speechcloud.kky.zcu.cz:9444/speechcloud-3.0.js}
+        VITE_SPEECHCLOUD_MODEL_URI: ${VITE_SPEECHCLOUD_MODEL_URI:-https://speechcloud.kky.zcu.cz:9443/v1/speechcloud/edu-hds-all}
+        VITE_SPEECH_DIALOG_LOCAL_DM: ${VITE_SPEECH_DIALOG_LOCAL_DM:?Set VITE_SPEECH_DIALOG_LOCAL_DM in .env.production}
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      - backend
+
+  speech-dialog:
+    build:
+      context: .
+      dockerfile: speech-dialog/Dockerfile
+    restart: unless-stopped
+    environment:
+      SPEECH_DIALOG_HOST: 0.0.0.0
+      SPEECH_DIALOG_PORT: 8888
+      SPEECH_STATIC_PATH: ${SPEECH_STATIC_PATH:-./static}
+      SPEECH_SYSTEM_PROMPT: ${SPEECH_SYSTEM_PROMPT:-Odpovidej strucne v cestine.}
+      BACKEND_API_BASE_URL: http://backend:8000/api
+      VOICE_ATTACH_TIMEOUT_SECONDS: ${VOICE_ATTACH_TIMEOUT_SECONDS:-30}
+    ports:
+      - "${SPEECH_DIALOG_PORT:-8888}:8888"
+    depends_on:
+      - backend
