@@ -169,6 +169,7 @@ select {
 }
 
 .chat-panel {
+  position: relative;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   gap: 1rem;
@@ -899,16 +900,127 @@ button[type="submit"] {
 .settings-form {
   min-height: 0;
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   align-content: start;
+  align-items: start;
   gap: 1rem;
   overflow: auto;
   padding: 0.25rem;
 }
 
+.inference-settings {
+  max-width: none;
+}
+
+.inference-settings-head,
+.inference-server-head,
+.inference-disabled-role {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.inference-settings-head {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.inference-settings-head h2,
+.inference-settings-head p {
+  margin: 0;
+}
+
+.inference-settings-head p {
+  margin-top: 0.3rem;
+  color: var(--muted);
+}
+
+.inference-server-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.8rem;
+}
+
+.inference-server {
+  min-height: 12rem;
+  padding: 0.85rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.inference-server-head {
+  justify-content: flex-start;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.inference-server-head div,
+.inference-role div,
+.inference-disabled-role div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.inference-server-head span,
+.inference-role span,
+.inference-disabled-role span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.inference-server-head .server-online {
+  color: #55c78a;
+}
+
+.inference-server-head .server-offline {
+  color: #ee7676;
+}
+
+.inference-role-list {
+  display: grid;
+  gap: 0.55rem;
+  padding-top: 0.75rem;
+}
+
+.inference-role {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(7rem, 0.6fr);
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.65rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.045);
+  cursor: grab;
+}
+
+.inference-role:active {
+  cursor: grabbing;
+}
+
+.inference-role select,
+.inference-disabled-role select {
+  min-width: 0;
+}
+
+.inference-role-controls {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.inference-disabled-role {
+  padding: 0.75rem;
+  border: 1px dashed var(--panel-border);
+  border-radius: 8px;
+}
+
 .settings-section {
   display: grid;
   gap: 1rem;
-  max-width: 720px;
+  min-width: 0;
   padding: 1rem;
   border: 1px solid var(--panel-border);
   border-radius: 22px;
@@ -959,6 +1071,7 @@ button[type="submit"] {
 
 .settings-save {
   width: fit-content;
+  grid-column: 1 / -1;
 }
 
 .status-stack {
@@ -1004,6 +1117,27 @@ button[type="submit"] {
   color: var(--text);
 }
 
+.voice-call-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: linear-gradient(135deg, var(--primary), var(--primary-strong));
+  color: #15110d;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.voice-end-button {
+  color: #ff8175;
+}
+
+.voice-mute-button.active {
+  border-color: rgba(255, 184, 77, 0.55);
+  color: #ffc56d;
+  background: rgba(170, 105, 25, 0.2);
+}
+
 .voice-pill {
   display: inline-flex;
   align-items: center;
@@ -1014,6 +1148,102 @@ button[type="submit"] {
   background: rgba(255, 255, 255, 0.08);
   color: var(--muted);
   white-space: nowrap;
+}
+
+.voice-pill.connecting,
+.voice-pill.listening,
+.voice-pill.recognizing,
+.voice-pill.thinking,
+.voice-pill.speaking {
+  border-color: rgba(31, 173, 131, 0.5);
+  color: var(--text);
+}
+
+.voice-pill.error {
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #fecaca;
+}
+
+.voice-overlay {
+  position: fixed;
+  z-index: 50;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  width: min(26rem, calc(100vw - 2.5rem));
+  max-height: min(38rem, calc(100vh - 2.5rem));
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid rgba(31, 173, 131, 0.35);
+  border-radius: 18px;
+  background: rgba(22, 26, 32, 0.96);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+}
+
+.voice-overlay-head,
+.voice-overlay-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.voice-overlay-head h2 {
+  margin: 0.15rem 0 0;
+  font-size: 1.05rem;
+}
+
+.voice-overlay-head {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.voice-overlay-head:active {
+  cursor: grabbing;
+}
+
+.voice-overlay-body {
+  display: grid;
+  gap: 0.75rem;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.voice-overlay-body span,
+.voice-overlay-sources span {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+}
+
+.voice-overlay-body strong,
+.voice-overlay-body p {
+  margin: 0;
+}
+
+.voice-overlay-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.voice-overlay-sources span {
+  width: 100%;
+}
+
+.voice-overlay-sources button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 0.78rem;
 }
 
 .messages {
@@ -1270,6 +1500,24 @@ button[type="submit"] {
     grid-template-columns: 1fr;
   }
 
+  .settings-form {
+    grid-template-columns: 1fr;
+  }
+
+  .inference-settings-head,
+  .inference-disabled-role {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .inference-role {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .inference-role-controls {
+    grid-column: 2;
+  }
+
   .documents-workspace {
     grid-template-columns: 1fr;
   }
@@ -1327,8 +1575,16 @@ button[type="submit"] {
   }
 
   .model-select,
+  .voice-call-button,
   .voice-pill {
     width: 100%;
+  }
+
+  .voice-overlay {
+    right: 0.75rem;
+    bottom: 0.75rem;
+    width: calc(100vw - 1.5rem);
+    max-height: calc(100dvh - 1.5rem);
   }
 
   .messages {

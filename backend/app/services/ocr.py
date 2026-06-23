@@ -17,6 +17,8 @@ from app.core.config import settings
 from app.models.document import Document, DocumentFile, DocumentStatus, OcrResult
 from app.models.job import JobKind, JobStatus, ProcessingJob
 from app.services.ollama_auth import ollama_auth
+from app.services.inference_routing import get_role_server
+from app.services.ollama_servers import OllamaServerConfig, get_ollama_server
 
 
 @dataclass(frozen=True)
@@ -225,6 +227,9 @@ class EasyOcrEngine(MultiFileOcrEngine):
 class OllamaOcrEngine(MultiFileOcrEngine):
     engine_name = "ollama"
 
+    def __init__(self, server: OllamaServerConfig | None = None) -> None:
+        self.server = server or get_ollama_server("server_1")
+
     def extract(self, document: Document) -> ExtractedText:
         extracted = super().extract(document)
         return replace(
@@ -274,7 +279,7 @@ class OllamaOcrEngine(MultiFileOcrEngine):
         }
         try:
             with httpx.Client(timeout=settings.ollama_ocr_timeout_seconds, auth=self._auth()) as client:
-                response = client.post(f"{settings.ollama_base_url.rstrip('/')}/api/chat", json=payload)
+                response = client.post(f"{self.server.base_url}/api/chat", json=payload)
                 response.raise_for_status()
                 data = response.json()
         except httpx.TimeoutException as exc:
@@ -288,17 +293,17 @@ class OllamaOcrEngine(MultiFileOcrEngine):
         return content.strip()
 
     def _auth(self) -> httpx.Auth | None:
-        return ollama_auth()
+        return ollama_auth(self.server)
 
 
-def create_ocr_engine() -> OcrEngine:
+def create_ocr_engine(server: OllamaServerConfig | None = None) -> OcrEngine:
     engine_name = settings.ocr_engine.strip().lower()
     if engine_name == "easyocr":
         return EasyOcrEngine()
     if engine_name == "tesseract":
         return TesseractOcrEngine()
     if engine_name == "ollama":
-        return OllamaOcrEngine()
+        return OllamaOcrEngine(server)
     raise ValueError(f"Unsupported OCR engine: {settings.ocr_engine}")
 
 
@@ -332,7 +337,9 @@ async def process_ocr_job(
     await session.commit()
 
     try:
-        extracted = (engine or create_ocr_engine()).extract(document)
+        if engine is None:
+            engine = create_ocr_engine(await get_role_server(session, "ocr"))
+        extracted = engine.extract(document)
         existing_result = await session.execute(
             select(OcrResult).where(OcrResult.document_id == document.id, OcrResult.user_id == document.user_id)
         )

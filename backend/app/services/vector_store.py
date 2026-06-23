@@ -2,12 +2,15 @@ import json
 import logging
 import uuid
 
+from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.document import Document
 from app.services.ollama import OllamaClient
+from app.services.inference_routing import get_or_create_inference_routing
+from app.services.ollama_servers import get_ollama_server
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +42,6 @@ async def _document_chunks_table_exists(session: AsyncSession) -> bool:
 
 
 async def delete_document_chunks(session: AsyncSession, document_id: uuid.UUID) -> None:
-    if not settings.rag_embedding_model:
-        return
     if not await _document_chunks_table_exists(session):
         return
     await session.execute(text("DELETE FROM document_chunks WHERE document_id = :document_id"), {"document_id": document_id})
@@ -53,14 +54,18 @@ async def index_document_rag_text(
     extraction: dict,
     client: OllamaClient | None = None,
 ) -> bool:
-    if not settings.rag_embedding_model or not rag_text.strip():
+    if not rag_text.strip():
         return False
 
     try:
         if not await _document_chunks_table_exists(session):
             return False
-        embedding_client = client or OllamaClient()
-        embedding = await embedding_client.embed(rag_text, model=settings.rag_embedding_model)
+        routing = await get_or_create_inference_routing(session)
+        embedding_model = routing.embedding_model or settings.rag_embedding_model
+        if not embedding_model:
+            return False
+        embedding_client = client or OllamaClient(get_ollama_server(routing.embedding_server_id))
+        embedding = await embedding_client.embed(rag_text, model=embedding_model)
         if not embedding:
             return False
 
@@ -84,7 +89,7 @@ async def index_document_rag_text(
                 "content": rag_text,
                 "metadata_json": json.dumps(_compact_metadata(extraction), ensure_ascii=False),
                 "embedding": _vector_literal(embedding),
-                "embedding_model": settings.rag_embedding_model,
+                "embedding_model": embedding_model,
             },
         )
         return True
@@ -100,14 +105,18 @@ async def search_document_chunks(
     limit: int | None = None,
     client: OllamaClient | None = None,
 ) -> list[RetrievedChunk]:
-    if not settings.rag_embedding_model or not query.strip():
+    if not query.strip():
         return []
 
     try:
         if not await _document_chunks_table_exists(session):
             return []
-        embedding_client = client or OllamaClient()
-        embedding = await embedding_client.embed(query, model=settings.rag_embedding_model)
+        routing = await get_or_create_inference_routing(session)
+        embedding_model = routing.embedding_model or settings.rag_embedding_model
+        if not embedding_model:
+            return []
+        embedding_client = client or OllamaClient(get_ollama_server(routing.embedding_server_id))
+        embedding = await embedding_client.embed(query, model=embedding_model)
         if not embedding:
             return []
 
@@ -134,9 +143,15 @@ async def search_document_chunks(
             {
                 "user_id": user_id,
                 "embedding": _vector_literal(embedding),
-                "limit": limit or settings.rag_search_limit,
+                "limit": limit or (
+                    settings.rag_reranker_candidate_limit
+                    if routing.reranker_model or settings.rag_reranker_model
+                    else settings.rag_search_limit
+                ),
             },
         )
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Document RAG search failed for user %s", user_id)
         return []
@@ -169,7 +184,11 @@ async def search_document_structured(
     where_terms = " AND ".join(f"de.structured_json::text ILIKE :term_{index}" for index in range(len(terms)))
     params = {
         "user_id": user_id,
-        "limit": limit or settings.rag_search_limit,
+        "limit": limit or (
+            settings.rag_reranker_candidate_limit
+            if settings.rag_reranker_model
+            else settings.rag_search_limit
+        ),
         **{f"term_{index}": f"%{term}%" for index, term in enumerate(terms)},
     }
 

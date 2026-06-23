@@ -47,6 +47,7 @@ export type ChatSource = {
   title: string;
   filename?: string | null;
   distance?: number | null;
+  reranker_score?: number | null;
 };
 
 export type Message = {
@@ -60,6 +61,8 @@ export type Message = {
     mode: "none" | "rag" | "search" | "hybrid" | string;
     used_rag: boolean;
     used_search: boolean;
+    used_reranker?: boolean;
+    reranker_model?: string | null;
     source_count: number;
   } | null;
 };
@@ -68,17 +71,59 @@ export type ConversationDetail = Conversation & {
   messages: Message[];
 };
 
+export type VoiceSessionCreateResponse = {
+  voice_session_id: string;
+  token: string;
+  conversation: ConversationDetail;
+  expires_at: string;
+};
+
+export type VoiceSessionEndResponse = {
+  voice_session_id: string;
+  status: string;
+};
+
 export type OllamaModel = {
   name: string;
   selected: boolean;
 };
 
+export type InferenceRole = "chat" | "embedding" | "reranker" | "ocr" | "structuring";
+
+export type InferenceServer = {
+  id: string;
+  name: string;
+  reachable: boolean;
+  models: string[];
+  detail?: string | null;
+};
+
+export type InferenceRouting = {
+  chat_server_id: string;
+  embedding_server_id: string;
+  embedding_model: string | null;
+  reranker_server_id: string | null;
+  reranker_model: string | null;
+  ocr_server_id: string;
+  structuring_server_id: string;
+};
+
+export type InferenceConfiguration = {
+  servers: InferenceServer[];
+  routing: InferenceRouting;
+  reranker_enabled: boolean;
+};
+
 export type UserSettings = {
   id: string;
   user_id: string;
+  default_chat_model: string | null;
+  tts_voice: string | null;
   ocr_processing_model: string | null;
   rag_source_strategy: "best_band" | "top_n";
   rag_best_band: number;
+  rag_reranker_best_band: number;
+  rag_reranker_min_score: number;
   rag_top_n: number;
   created_at: string;
   updated_at: string;
@@ -246,14 +291,29 @@ export async function listModels() {
   return api<OllamaModel[]>("/chat/models");
 }
 
+export async function getInferenceConfiguration() {
+  return api<InferenceConfiguration>("/inference");
+}
+
+export async function updateInferenceConfiguration(routing: InferenceRouting) {
+  return api<InferenceConfiguration>("/inference", {
+    method: "PUT",
+    json: routing
+  });
+}
+
 export async function getUserSettings() {
   return api<UserSettings>("/settings");
 }
 
 export async function updateUserSettings(payload: {
+  default_chat_model: string | null;
+  tts_voice: string | null;
   ocr_processing_model: string | null;
   rag_source_strategy: "best_band" | "top_n";
   rag_best_band: number;
+  rag_reranker_best_band: number;
+  rag_reranker_min_score: number;
   rag_top_n: number;
 }) {
   return api<UserSettings>("/settings", {
@@ -270,4 +330,17 @@ export async function sendMessage(conversationId: string, content: string, model
       json: { content, model }
     }
   );
+}
+
+export async function createVoiceSession(conversationId?: string | null) {
+  return api<VoiceSessionCreateResponse>("/voice/sessions", {
+    method: "POST",
+    json: { conversation_id: conversationId ?? null }
+  });
+}
+
+export async function endVoiceSession(voiceSessionId: string) {
+  return api<VoiceSessionEndResponse>(`/voice/sessions/${voiceSessionId}/end`, {
+    method: "POST"
+  });
 }

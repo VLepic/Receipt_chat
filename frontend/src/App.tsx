@@ -3,37 +3,59 @@ import {
   Camera,
   Download,
   FileText,
+  GripVertical,
   LogOut,
   MessageSquare,
   Mic,
+  MicOff,
+  PhoneCall,
+  PhoneOff,
   Plus,
   Save,
   Send,
+  Server,
   Settings as SettingsIcon,
   Sparkles,
   Trash2,
   UploadCloud
 } from "lucide-react";
-import { ChangeEvent, FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  DragEvent,
+  FormEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 
 import {
+  ChatSource,
   Conversation,
   ConversationDetail,
   DocumentExtraction,
   DocumentFile,
   DocumentItem,
+  InferenceConfiguration,
+  InferenceRole,
+  InferenceRouting,
   OcrResult,
   OllamaModel,
   User,
   UserSettings,
   addDocumentFile,
   createConversation,
+  createVoiceSession,
   deleteConversation,
   deleteDocument,
   deleteDocumentFile,
   documentFileDownloadUrl,
+  endVoiceSession,
   getDocumentExtraction,
   getDocumentOcr,
+  getInferenceConfiguration,
   getConversation,
   getMe,
   getUserSettings,
@@ -48,16 +70,53 @@ import {
   runDocumentOcr,
   sendMessage,
   updateDocumentExtraction,
+  updateInferenceConfiguration,
   updateUserSettings,
   uploadDocument
 } from "./lib/api";
 
 type AuthMode = "login" | "register";
-type VoiceState = "idle" | "listening" | "recognizing" | "thinking" | "speaking" | "error";
+type VoiceState = "idle" | "connecting" | "listening" | "recognizing" | "thinking" | "speaking" | "error" | "ended";
 type AppView = "chat" | "documents" | "settings";
 type DocumentTextView = "overview" | "structured" | "raw" | "ocr";
 type JsonRecord = Record<string, unknown>;
 type JsonPath = Array<string | number>;
+type DialToneController = {
+  context: AudioContext;
+  intervalId: number;
+};
+type VoiceOverlayPosition = { x: number; y: number };
+type VoiceOverlayDrag = VoiceOverlayPosition & { pointerId: number };
+const INFERENCE_ROLES: Array<{ id: InferenceRole; label: string; description: string }> = [
+  { id: "chat", label: "Chat", description: "Rozhodování agenta a odpovědi" },
+  { id: "embedding", label: "Embedding", description: "Vektory pro RAG" },
+  { id: "reranker", label: "Reranking", description: "Volitelné přeseřazení kandidátů" },
+  { id: "ocr", label: "OCR", description: "Rozpoznání textu z obrazu" },
+  { id: "structuring", label: "Strukturace", description: "JSON a popisek dokladu" }
+];
+type SpeechCloudClient = {
+  on: (event: string, handler: (payload?: unknown) => void) => void;
+  init: () => void;
+  dm_send_message: (payload: { data: unknown }) => void;
+  tts_stop: () => void;
+  terminate: () => void;
+};
+
+declare global {
+  interface Window {
+    SpeechCloud?: new (options: Record<string, unknown>) => SpeechCloudClient;
+  }
+}
+
+const TTS_VOICES = [
+  { value: "Iva210", label: "Iva" },
+  { value: "Jan210", label: "Jan" },
+  { value: "Jiri210", label: "Jiří" },
+  { value: "Katerina210", label: "Kateřina" },
+  { value: "Radka210", label: "Radka" },
+  { value: "Stanislav210", label: "Stanislav" },
+  { value: "Alena210", label: "Alena" }
+];
 
 const FIELD_LABELS: Record<string, string> = {
   document_type: "Typ dokladu",
@@ -119,6 +178,29 @@ const FIELD_LABELS: Record<string, string> = {
 
 function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
+}
+
+function voiceTranscriptFromPayload(value: unknown, depth = 0): string | null {
+  if (depth > 3) {
+    return null;
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return null;
+  }
+  for (const key of ["transcript", "word_1best", "utterance", "text"]) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return (
+    voiceTranscriptFromPayload(record.result, depth + 1) ??
+    voiceTranscriptFromPayload(record.data, depth + 1)
+  );
 }
 
 function fieldLabel(key: string | number): string {
@@ -373,6 +455,28 @@ function documentCatalogStatus(document: DocumentItem, extraction: DocumentExtra
   return document.status;
 }
 
+let speechCloudScriptPromise: Promise<void> | null = null;
+
+function loadSpeechCloudScript(): Promise<void> {
+  if (window.SpeechCloud) {
+    return Promise.resolve();
+  }
+  if (speechCloudScriptPromise) {
+    return speechCloudScriptPromise;
+  }
+  const scriptUrl =
+    import.meta.env.VITE_SPEECHCLOUD_SCRIPT_URL ?? "https://speechcloud.kky.zcu.cz:9444/speechcloud-3.0.js";
+  speechCloudScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = scriptUrl;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Nepodarilo se nacist SpeechCloud klienta."));
+    document.head.appendChild(script);
+  });
+  return speechCloudScriptPromise;
+}
+
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
@@ -381,14 +485,28 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+  const [voiceSessionId, setVoiceSessionId] = useState<string | null>(null);
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [voiceAnswer, setVoiceAnswer] = useState("");
+  const [voiceSources, setVoiceSources] = useState<ChatSource[]>([]);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [isVoiceMuted, setIsVoiceMuted] = useState(false);
+  const [voiceOverlayPosition, setVoiceOverlayPosition] = useState<VoiceOverlayPosition | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<ConversationDetail | null>(null);
   const [models, setModels] = useState<OllamaModel[]>([]);
+  const [inferenceConfiguration, setInferenceConfiguration] = useState<InferenceConfiguration | null>(null);
+  const [inferenceRouting, setInferenceRouting] = useState<InferenceRouting | null>(null);
+  const [isSavingInference, setIsSavingInference] = useState(false);
   const [selectedModel, setSelectedModel] = useState("");
   const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
+  const [defaultChatModel, setDefaultChatModel] = useState("");
+  const [ttsVoice, setTtsVoice] = useState("");
   const [ocrProcessingModel, setOcrProcessingModel] = useState("");
   const [ragSourceStrategy, setRagSourceStrategy] = useState<"best_band" | "top_n">("best_band");
   const [ragBestBand, setRagBestBand] = useState("0.08");
+  const [ragRerankerBestBand, setRagRerankerBestBand] = useState("0.10");
+  const [ragRerankerMinScore, setRagRerankerMinScore] = useState("0.50");
   const [ragTopN, setRagTopN] = useState("2");
   const [messageInput, setMessageInput] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -411,11 +529,23 @@ export function App() {
   const [documentTextView, setDocumentTextView] = useState<DocumentTextView>("overview");
   const [structuredDraft, setStructuredDraft] = useState<unknown | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const dialToneRef = useRef<DialToneController | null>(null);
+  const speechCloudRef = useRef<SpeechCloudClient | null>(null);
+  const voiceOverlayRef = useRef<HTMLDivElement | null>(null);
+  const voiceOverlayDragRef = useRef<VoiceOverlayDrag | null>(null);
 
   const activeDocument = useMemo(
     () => documents.find((document) => document.id === activeDocumentId) ?? documents[0] ?? null,
     [activeDocumentId, documents]
   );
+  const structuringModels = useMemo(() => {
+    if (!inferenceConfiguration || !inferenceRouting) {
+      return models.map((model) => model.name);
+    }
+    return (
+      inferenceConfiguration.servers.find((server) => server.id === inferenceRouting.structuring_server_id)?.models ?? []
+    );
+  }, [inferenceConfiguration, inferenceRouting, models]);
   const activeDocumentTitle = activeDocument ? documentTitle(activeDocument, activeExtraction) : "";
   const activeDocumentDate = formatDateLabel(documentIssueDate(activeExtraction) ?? activeDocument?.created_at);
   const activeDocumentFile =
@@ -461,11 +591,13 @@ export function App() {
   const voiceLabel = useMemo(() => {
     const labels: Record<VoiceState, string> = {
       idle: "SpeechCloud pripraven",
+      connecting: "Pripojuji hovor",
       listening: "Posloucham",
       recognizing: "Rozpoznavam",
       thinking: "Model premysli",
       speaking: "Prehravam odpoved",
-      error: "Hlasova chyba"
+      error: "Hlasova chyba",
+      ended: "Hovor ukoncen"
     };
     return labels[voiceState];
   }, [voiceState]);
@@ -477,13 +609,40 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const keepVoiceOverlayVisible = () => {
+      const overlay = voiceOverlayRef.current;
+      if (!overlay) {
+        return;
+      }
+      setVoiceOverlayPosition((current) => {
+        if (!current) {
+          return current;
+        }
+        const margin = 8;
+        return {
+          x: Math.min(Math.max(margin, current.x), Math.max(margin, window.innerWidth - overlay.offsetWidth - margin)),
+          y: Math.min(Math.max(margin, current.y), Math.max(margin, window.innerHeight - overlay.offsetHeight - margin))
+        };
+      });
+    };
+    window.addEventListener("resize", keepVoiceOverlayVisible);
+    return () => window.removeEventListener("resize", keepVoiceOverlayVisible);
+  }, []);
+
+  useEffect(() => {
     if (!user) {
       setConversations([]);
       setActiveConversation(null);
       setModels([]);
+      setInferenceConfiguration(null);
+      setInferenceRouting(null);
       setSelectedModel("");
       setUserSettings(null);
+      setDefaultChatModel("");
+      setTtsVoice("");
       setOcrProcessingModel("");
+      setRagRerankerBestBand("0.10");
+      setRagRerankerMinScore("0.50");
       setDocuments([]);
       setDocumentExtractions({});
       setDocumentFiles([]);
@@ -492,8 +651,8 @@ export function App() {
 
     setIsLoadingChat(true);
     setError(null);
-    Promise.allSettled([listConversations(), listModels(), listDocuments(), getUserSettings()])
-      .then(async ([conversationResult, modelResult, documentsResult, settingsResult]) => {
+    Promise.allSettled([listConversations(), listModels(), listDocuments(), getUserSettings(), getInferenceConfiguration()])
+      .then(async ([conversationResult, modelResult, documentsResult, settingsResult, inferenceResult]) => {
         if (conversationResult.status === "fulfilled") {
           setConversations(conversationResult.value);
           if (conversationResult.value[0]) {
@@ -503,7 +662,12 @@ export function App() {
 
         if (modelResult.status === "fulfilled") {
           setModels(modelResult.value);
-          const defaultModel = modelResult.value.find((model) => model.selected) ?? modelResult.value[0];
+          const configuredModel =
+            settingsResult.status === "fulfilled" ? settingsResult.value.default_chat_model : null;
+          const defaultModel =
+            modelResult.value.find((model) => model.name === configuredModel) ??
+            modelResult.value.find((model) => model.selected) ??
+            modelResult.value[0];
           setSelectedModel(defaultModel?.name ?? "");
         } else {
           setError("Nepodarilo se nacist seznam Ollama modelu.");
@@ -517,10 +681,19 @@ export function App() {
 
         if (settingsResult.status === "fulfilled") {
           setUserSettings(settingsResult.value);
+          setDefaultChatModel(settingsResult.value.default_chat_model ?? "");
+          setTtsVoice(settingsResult.value.tts_voice ?? "");
           setOcrProcessingModel(settingsResult.value.ocr_processing_model ?? "");
           setRagSourceStrategy(settingsResult.value.rag_source_strategy);
           setRagBestBand(String(settingsResult.value.rag_best_band));
+          setRagRerankerBestBand(String(settingsResult.value.rag_reranker_best_band));
+          setRagRerankerMinScore(String(settingsResult.value.rag_reranker_min_score));
           setRagTopN(String(settingsResult.value.rag_top_n));
+        }
+
+        if (inferenceResult.status === "fulfilled") {
+          setInferenceConfiguration(inferenceResult.value);
+          setInferenceRouting(inferenceResult.value.routing);
         }
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Nacteni chatu selhalo"))
@@ -636,6 +809,14 @@ export function App() {
     } finally {
       setIsLoadingChat(false);
     }
+  }
+
+  function promoteConversation(conversation: ConversationDetail) {
+    setActiveConversation(conversation);
+    setConversations((current) => {
+      const rest = current.filter((item) => item.id !== conversation.id);
+      return [conversation, ...rest];
+    });
   }
 
   async function handleNewChat() {
@@ -866,20 +1047,91 @@ export function App() {
     setIsSavingSettings(true);
     try {
       const saved = await updateUserSettings({
+        default_chat_model: defaultChatModel.trim() || null,
+        tts_voice: ttsVoice.trim() || null,
         ocr_processing_model: ocrProcessingModel.trim() || null,
         rag_source_strategy: ragSourceStrategy,
         rag_best_band: Number(ragBestBand),
+        rag_reranker_best_band: Number(ragRerankerBestBand),
+        rag_reranker_min_score: Number(ragRerankerMinScore),
         rag_top_n: Number(ragTopN)
       });
       setUserSettings(saved);
+      setDefaultChatModel(saved.default_chat_model ?? "");
+      setTtsVoice(saved.tts_voice ?? "");
       setOcrProcessingModel(saved.ocr_processing_model ?? "");
       setRagSourceStrategy(saved.rag_source_strategy);
       setRagBestBand(String(saved.rag_best_band));
+      setRagRerankerBestBand(String(saved.rag_reranker_best_band));
+      setRagRerankerMinScore(String(saved.rag_reranker_min_score));
       setRagTopN(String(saved.rag_top_n));
+      const effectiveChatModel =
+        models.find((model) => model.name === saved.default_chat_model) ??
+        models.find((model) => model.selected) ??
+        models[0];
+      setSelectedModel(effectiveChatModel?.name ?? "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ulozeni nastaveni selhalo");
     } finally {
       setIsSavingSettings(false);
+    }
+  }
+
+  function assignInferenceRole(role: InferenceRole, serverId: string | null) {
+    setInferenceRouting((current) => {
+      if (!current) {
+        return current;
+      }
+      const next = { ...current, [`${role}_server_id`]: serverId } as InferenceRouting;
+      if (role === "embedding" || role === "reranker") {
+        const modelField = `${role}_model` as "embedding_model" | "reranker_model";
+        const serverModels =
+          inferenceConfiguration?.servers.find((server) => server.id === serverId)?.models ?? [];
+        if (!serverId || !next[modelField] || !serverModels.includes(next[modelField] as string)) {
+          next[modelField] = null;
+        }
+      }
+      return next;
+    });
+  }
+
+  function handleInferenceDrop(event: DragEvent<HTMLDivElement>, serverId: string) {
+    event.preventDefault();
+    const role = event.dataTransfer.getData("application/x-sp2-inference-role") as InferenceRole;
+    if (INFERENCE_ROLES.some((item) => item.id === role)) {
+      assignInferenceRole(role, serverId);
+    }
+  }
+
+  async function handleSaveInference() {
+    if (!inferenceRouting) {
+      return;
+    }
+    setError(null);
+    if (!inferenceRouting.embedding_model) {
+      setError("Vyberte platný embedding model na přiřazeném serveru.");
+      return;
+    }
+    if (inferenceRouting.reranker_server_id && !inferenceRouting.reranker_model) {
+      setError("Vyberte platný reranker model na přiřazeném serveru.");
+      return;
+    }
+    setIsSavingInference(true);
+    try {
+      const saved = await updateInferenceConfiguration(inferenceRouting);
+      setInferenceConfiguration(saved);
+      setInferenceRouting(saved.routing);
+      const refreshedModels = await listModels();
+      setModels(refreshedModels);
+      const effectiveChatModel =
+        refreshedModels.find((model) => model.name === defaultChatModel) ??
+        refreshedModels.find((model) => model.selected) ??
+        refreshedModels[0];
+      setSelectedModel(effectiveChatModel?.name ?? "");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Uložení výpočetních serverů selhalo");
+    } finally {
+      setIsSavingInference(false);
     }
   }
 
@@ -892,7 +1144,6 @@ export function App() {
 
     setError(null);
     setIsSending(true);
-    setVoiceState("thinking");
     try {
       let conversation = activeConversation;
       if (!conversation) {
@@ -900,20 +1151,300 @@ export function App() {
       }
 
       const response = await sendMessage(conversation.id, content, selectedModel || undefined);
-      setActiveConversation(response.conversation);
-      setConversations((current) => {
-        const rest = current.filter((item) => item.id !== response.conversation.id);
-        return [response.conversation, ...rest];
-      });
+      promoteConversation(response.conversation);
       setMessageInput("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Odeslani zpravy selhalo");
-      setVoiceState("error");
       return;
     } finally {
       setIsSending(false);
     }
-    setVoiceState("idle");
+  }
+
+  function stopDialTone() {
+    const controller = dialToneRef.current;
+    if (!controller) {
+      return;
+    }
+    window.clearInterval(controller.intervalId);
+    dialToneRef.current = null;
+    void controller.context.close();
+  }
+
+  function startDialTone() {
+    stopDialTone();
+    const AudioContextConstructor =
+      window.AudioContext ??
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextConstructor) {
+      return;
+    }
+
+    const context = new AudioContextConstructor();
+    const playPulse = () => {
+      if (context.state === "closed") {
+        return;
+      }
+      const now = context.currentTime;
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(425, now);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.035, now + 0.03);
+      gain.gain.setValueAtTime(0.035, now + 0.9);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 1);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start(now);
+      oscillator.stop(now + 1.05);
+    };
+
+    void context.resume().then(playPulse);
+    const intervalId = window.setInterval(playPulse, 4_000);
+    dialToneRef.current = { context, intervalId };
+  }
+
+  function handleVoiceStatus(payload: unknown) {
+    const data = asRecord(payload);
+    if (!data || data.type !== "voice_status") {
+      return;
+    }
+    const state = typeof data.state === "string" ? data.state : "";
+    if (state === "muted") {
+      setIsVoiceMuted(true);
+    } else if (state === "unmuted") {
+      setIsVoiceMuted(false);
+      setVoiceState("listening");
+    }
+    if (state === "listening" || state === "error" || state === "ended") {
+      stopDialTone();
+    }
+    if (state === "connecting" || state === "listening" || state === "thinking" || state === "speaking" || state === "error" || state === "ended") {
+      setVoiceState(state);
+    } else if (state === "asr_result") {
+      setVoiceState("recognizing");
+    } else if (state === "assistant_response") {
+      setVoiceState("speaking");
+    }
+    const transcript = voiceTranscriptFromPayload(data);
+    if (transcript) {
+      setVoiceTranscript(transcript);
+    }
+    if (typeof data.answer === "string") {
+      setVoiceAnswer(data.answer);
+    }
+    if (Array.isArray(data.sources)) {
+      setVoiceSources(data.sources as ChatSource[]);
+    }
+    if (typeof data.message === "string") {
+      if (state === "error") {
+        setVoiceError(data.message);
+      }
+    }
+    const conversation = asRecord(data.conversation);
+    if (conversation) {
+      const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+      const lastUserMessage = [...messages]
+        .reverse()
+        .map(asRecord)
+        .find((message) => message?.role === "user" && typeof message.content === "string");
+      if (typeof lastUserMessage?.content === "string" && lastUserMessage.content.trim()) {
+        setVoiceTranscript(lastUserMessage.content.trim());
+      }
+      promoteConversation(conversation as ConversationDetail);
+    }
+  }
+
+  async function handleStartVoiceCall() {
+    if (!user || voiceSessionId) {
+      return;
+    }
+    setActiveView("chat");
+    setError(null);
+    setVoiceError(null);
+    setVoiceTranscript("");
+    setVoiceAnswer("");
+    setVoiceSources([]);
+    setIsVoiceMuted(false);
+    setVoiceState("connecting");
+    startDialTone();
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Prohlížeč nepodporuje přístup k mikrofonu.");
+      }
+      const microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      microphoneStream.getTracks().forEach((track) => track.stop());
+      const session = await createVoiceSession(activeConversation?.id ?? null);
+      setVoiceSessionId(session.voice_session_id);
+      promoteConversation(session.conversation);
+      await loadSpeechCloudScript();
+      if (!window.SpeechCloud) {
+        throw new Error("SpeechCloud klient neni dostupny.");
+      }
+      const speechCloud = new window.SpeechCloud({
+        uri: import.meta.env.VITE_SPEECHCLOUD_MODEL_URI ?? "https://speechcloud.kky.zcu.cz:9443/v1/speechcloud/edu-hds-all",
+        tts: "#voice-audioout",
+        local_dm: import.meta.env.VITE_SPEECH_DIALOG_LOCAL_DM ?? "ws://localhost:8888/ws"
+      });
+      let voiceTokenSent = false;
+      let voiceAttached = false;
+      const sendVoiceToken = (force = false) => {
+        if (voiceTokenSent && !force) {
+          return;
+        }
+        voiceTokenSent = true;
+        speechCloud.dm_send_message({ data: { type: "voice_session", token: session.token } });
+      };
+      const attachTimeout = window.setTimeout(() => {
+        if (!voiceAttached) {
+          stopDialTone();
+          setVoiceError("SpeechCloud se nepodařilo propojit s hlasovým dialogem.");
+          setVoiceState("error");
+        }
+      }, 15_000);
+      const handleSpeechCloudConnectionError = (message: unknown, fallback: string) => {
+        window.clearTimeout(attachTimeout);
+        stopDialTone();
+        const record = asRecord(message);
+        const detail = record?.error ?? record?.text ?? record?.reason ?? record?.status;
+        setVoiceError(detail === undefined || detail === "" ? fallback : `${fallback}: ${String(detail)}`);
+        setVoiceState("error");
+      };
+      speechCloudRef.current = speechCloud;
+      speechCloud.on("ws_connected", () => setVoiceState("connecting"));
+      speechCloud.on("ws_local_dm_connected", () => setVoiceState("connecting"));
+      speechCloud.on("error_init", (message) => {
+        handleSpeechCloudConnectionError(message, "Inicializace SpeechCloudu selhala");
+      });
+      speechCloud.on("ws_error_init", (message) => {
+        handleSpeechCloudConnectionError(message, "Nepodařilo se připojit ke SpeechCloudu");
+      });
+      speechCloud.on("ws_local_dm_error_init", (message) => {
+        handleSpeechCloudConnectionError(message, "Nepodařilo se připojit k hlasovému dialogu");
+      });
+      speechCloud.on("ws_error", (message) => {
+        handleSpeechCloudConnectionError(message, "Spojení se SpeechCloudem selhalo");
+      });
+      speechCloud.on("sc_start_session", () => sendVoiceToken());
+      speechCloud.on("dm_receive_message", (message) => {
+        const record = asRecord(message);
+        const firstData = asRecord(record?.data);
+        const data = firstData?.type === "voice_status" ? firstData : asRecord(firstData?.data);
+        if (data?.state === "connecting" && !voiceAttached) {
+          sendVoiceToken(true);
+        }
+        if (data?.state === "listening") {
+          voiceAttached = true;
+          window.clearTimeout(attachTimeout);
+        }
+        handleVoiceStatus(data ?? record?.data);
+      });
+      speechCloud.on("asr_recognizing", () => {
+        stopDialTone();
+        setVoiceState("listening");
+      });
+      speechCloud.on("asr_result", (message) => {
+        const transcript = voiceTranscriptFromPayload(message);
+        if (transcript) {
+          setVoiceTranscript(transcript);
+        }
+      });
+      speechCloud.on("tts_done", () => {
+        setVoiceState((current) => (current === "speaking" ? "listening" : current));
+      });
+      speechCloud.on("ws_closed", () => {
+        window.clearTimeout(attachTimeout);
+        stopDialTone();
+        setIsVoiceMuted(false);
+        setVoiceState((current) => (current === "ended" ? current : "idle"));
+        speechCloudRef.current = null;
+      });
+      speechCloud.on("sc_error", (message) => {
+        window.clearTimeout(attachTimeout);
+        stopDialTone();
+        const record = asRecord(message);
+        setVoiceError(typeof record?.error === "string" ? record.error : "SpeechCloud chyba");
+        setVoiceState("error");
+      });
+      speechCloud.init();
+    } catch (err) {
+      stopDialTone();
+      setVoiceError(err instanceof Error ? err.message : "Spusteni hlasoveho hovoru selhalo");
+      setVoiceState("error");
+    }
+  }
+
+  async function handleEndVoiceCall() {
+    const sessionId = voiceSessionId;
+    stopDialTone();
+    setIsVoiceMuted(false);
+    speechCloudRef.current?.terminate();
+    speechCloudRef.current = null;
+    setVoiceSessionId(null);
+    setVoiceState("ended");
+    if (sessionId) {
+      try {
+        await endVoiceSession(sessionId);
+      } catch (err) {
+        setVoiceError(err instanceof Error ? err.message : "Ukonceni hlasove session selhalo");
+        setVoiceState("error");
+      }
+    }
+  }
+
+  function handleStopVoiceTts() {
+    speechCloudRef.current?.tts_stop();
+  }
+
+  function handleToggleVoiceMute() {
+    const speechCloud = speechCloudRef.current;
+    if (!speechCloud || !voiceSessionId) {
+      return;
+    }
+    const nextMuted = !isVoiceMuted;
+    speechCloud.dm_send_message({
+      data: { type: "voice_control", action: nextMuted ? "mute" : "unmute" }
+    });
+    setIsVoiceMuted(nextMuted);
+  }
+
+  function handleVoiceOverlayPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || !voiceOverlayRef.current) {
+      return;
+    }
+    const bounds = voiceOverlayRef.current.getBoundingClientRect();
+    voiceOverlayDragRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX - bounds.left,
+      y: event.clientY - bounds.top
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function handleVoiceOverlayPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = voiceOverlayDragRef.current;
+    const overlay = voiceOverlayRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !overlay) {
+      return;
+    }
+    const margin = 8;
+    setVoiceOverlayPosition({
+      x: Math.min(Math.max(margin, event.clientX - drag.x), Math.max(margin, window.innerWidth - overlay.offsetWidth - margin)),
+      y: Math.min(Math.max(margin, event.clientY - drag.y), Math.max(margin, window.innerHeight - overlay.offsetHeight - margin))
+    });
+    event.preventDefault();
+  }
+
+  function handleVoiceOverlayPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    if (voiceOverlayDragRef.current?.pointerId !== event.pointerId) {
+      return;
+    }
+    voiceOverlayDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }
 
   function handleOpenDocumentSource(documentId: string) {
@@ -1056,9 +1587,6 @@ export function App() {
         <section className="auth-panel">
           <p className="eyebrow">SP2 Assistant</p>
           <h1>Hlasovy chat nad doklady</h1>
-          <p className="muted">
-            Prihlaseni je pres secure HTTP-only cookie. Textovy chat se pripojuje na nakonfigurovany Ollama server.
-          </p>
           <form className="auth-form" onSubmit={handleAuth}>
             <label>
               Email
@@ -1179,10 +1707,20 @@ export function App() {
                 )}
               </select>
             </label>
-            <div className={`voice-pill ${voiceState}`}>
+            <button
+              className="voice-call-button"
+              onClick={handleStartVoiceCall}
+              type="button"
+              disabled={voiceState !== "idle" && voiceState !== "ended" && voiceState !== "error"}
+              title="Spustit hlasový hovor"
+            >
+              <PhoneCall size={18} />
+              Hovor
+            </button>
+            <span className={`voice-pill ${voiceState}`} aria-live="polite">
               <Mic size={18} />
               {voiceLabel}
-            </div>
+            </span>
             {activeConversation && (
               <button
                 className="danger-button icon-button"
@@ -1213,6 +1751,7 @@ export function App() {
                   <div className="message-retrieval" aria-label="Pouzite vyhledavani">
                     {message.retrieval.used_rag && <b>used rag</b>}
                     {message.retrieval.used_search && <b>used search</b>}
+                    {message.retrieval.used_reranker && <b>used reranker</b>}
                     {!message.retrieval.used_rag && !message.retrieval.used_search && <b>direct answer</b>}
                     <b>{message.retrieval.source_count} sources</b>
                   </div>
@@ -1554,6 +2093,190 @@ export function App() {
           </header>
 
           <form className="settings-form" onSubmit={handleSaveSettings}>
+          {inferenceConfiguration && inferenceRouting ? (
+            <section className="settings-section inference-settings" aria-labelledby="inference-heading">
+              <div className="inference-settings-head">
+                <div>
+                  <h2 id="inference-heading">Výpočetní servery</h2>
+                  <p>Role lze přetáhnout mezi servery nebo změnit jejich výběr přímo.</p>
+                </div>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={handleSaveInference}
+                  disabled={isSavingInference}
+                >
+                  <Save size={17} />
+                  {isSavingInference ? "Ukládám" : "Uložit routing"}
+                </button>
+              </div>
+              <div className="inference-server-grid">
+                {inferenceConfiguration.servers.map((server) => (
+                  <div
+                    className="inference-server"
+                    key={server.id}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => handleInferenceDrop(event, server.id)}
+                  >
+                    <div className="inference-server-head">
+                      <Server size={19} />
+                      <div>
+                        <strong>{server.name}</strong>
+                        <span className={server.reachable ? "server-online" : "server-offline"}>
+                          {server.reachable ? `Dostupný · ${server.models.length} modelů` : "Nedostupný"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="inference-role-list">
+                      {INFERENCE_ROLES.filter(
+                        (role) =>
+                          inferenceRouting[`${role.id}_server_id` as keyof InferenceRouting] === server.id
+                      ).map((role) => (
+                        <div
+                          className="inference-role"
+                          draggable
+                          key={role.id}
+                          onDragStart={(event) => {
+                            event.dataTransfer.setData("application/x-sp2-inference-role", role.id);
+                            event.dataTransfer.effectAllowed = "move";
+                          }}
+                        >
+                          <GripVertical size={17} aria-hidden="true" />
+                          <div>
+                            <strong>{role.label}</strong>
+                            <span>{role.description}</span>
+                          </div>
+                          <div className="inference-role-controls">
+                            <select
+                              aria-label={`Server pro ${role.label}`}
+                              value={server.id}
+                              onChange={(event) => assignInferenceRole(role.id, event.target.value || null)}
+                            >
+                              {role.id === "reranker" ? <option value="">Vypnuto</option> : null}
+                              {inferenceConfiguration.servers.map((option) => (
+                                <option key={option.id} value={option.id}>
+                                  {option.name}
+                                </option>
+                              ))}
+                            </select>
+                            {role.id === "embedding" || role.id === "reranker" ? (
+                              <select
+                                aria-label={`Model pro ${role.label}`}
+                                value={
+                                  role.id === "embedding"
+                                    ? inferenceRouting.embedding_model ?? ""
+                                    : inferenceRouting.reranker_model ?? ""
+                                }
+                                onChange={(event) =>
+                                  setInferenceRouting((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          [role.id === "embedding" ? "embedding_model" : "reranker_model"]:
+                                            event.target.value || null
+                                        }
+                                      : current
+                                  )
+                                }
+                              >
+                                <option value="">Vyberte model</option>
+                                {server.models.map((model) => (
+                                  <option key={model} value={model}>
+                                    {model}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {!inferenceRouting.reranker_server_id ? (
+                <div className="inference-disabled-role">
+                  <div>
+                    <strong>Reranking je vypnutý</strong>
+                    <span>
+                      {inferenceConfiguration.reranker_enabled
+                        ? "Vyberte server pro jeho zapnutí."
+                        : "Nejdříve nastavte RAG_RERANKER_MODEL v .env."}
+                    </span>
+                  </div>
+                  <select
+                    aria-label="Server pro Reranking"
+                    value=""
+                    disabled={!inferenceConfiguration.reranker_enabled}
+                    onChange={(event) => assignInferenceRole("reranker", event.target.value || null)}
+                  >
+                    <option value="">Vypnuto</option>
+                    {inferenceConfiguration.servers.map((server) => (
+                      <option key={server.id} value={server.id}>
+                        {server.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+            <section className="settings-section">
+              <div>
+                <h2>Chat</h2>
+                <p>Tento model se automaticky vybere pro textový i hlasový chat.</p>
+              </div>
+              <label className="settings-field">
+                <span>Výchozí model chatu</span>
+                <select
+                  value={defaultChatModel}
+                  onChange={(event) => setDefaultChatModel(event.target.value)}
+                  disabled={isSavingSettings}
+                >
+                  <option value="">Výchozí model serveru</option>
+                  {models.map((model) => (
+                    <option key={model.name} value={model.name}>
+                      {model.name}
+                    </option>
+                  ))}
+                  {defaultChatModel && !models.some((model) => model.name === defaultChatModel) ? (
+                    <option value={defaultChatModel}>{defaultChatModel}</option>
+                  ) : null}
+                </select>
+              </label>
+              <div className="settings-current">
+                <span>Aktuálně uloženo</span>
+                <strong>{userSettings?.default_chat_model ?? "Výchozí model serveru"}</strong>
+              </div>
+            </section>
+            <section className="settings-section">
+              <div>
+                <h2>Hlasový hovor</h2>
+                <p>Zvolený hlas se použije pro uvítání i všechny odpovědi SpeechCloudu.</p>
+              </div>
+              <label className="settings-field">
+                <span>TTS hlas</span>
+                <select
+                  value={ttsVoice}
+                  onChange={(event) => setTtsVoice(event.target.value)}
+                  disabled={isSavingSettings}
+                >
+                  <option value="">Výchozí hlas SpeechCloudu</option>
+                  {TTS_VOICES.map((voice) => (
+                    <option key={voice.value} value={voice.value}>
+                      {voice.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="settings-current">
+                <span>Aktuálně uloženo</span>
+                <strong>
+                  {TTS_VOICES.find((voice) => voice.value === userSettings?.tts_voice)?.label ??
+                    "Výchozí hlas SpeechCloudu"}
+                </strong>
+              </div>
+            </section>
             <section className="settings-section">
               <div>
                 <h2>Zpracovani dokumentu</h2>
@@ -1569,12 +2292,12 @@ export function App() {
                   disabled={isSavingSettings}
                 >
                   <option value="">Vychozi model serveru</option>
-                  {models.map((model) => (
-                    <option key={model.name} value={model.name}>
-                      {model.name}
+                  {structuringModels.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
                     </option>
                   ))}
-                  {ocrProcessingModel && !models.some((model) => model.name === ocrProcessingModel) ? (
+                  {ocrProcessingModel && !structuringModels.includes(ocrProcessingModel) ? (
                     <option value={ocrProcessingModel}>{ocrProcessingModel}</option>
                   ) : null}
                 </select>
@@ -1616,6 +2339,34 @@ export function App() {
                   />
                 </label>
                 <label className="settings-field">
+                  <span>Reranker best band</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={ragRerankerBestBand}
+                    onChange={(event) => setRagRerankerBestBand(event.target.value)}
+                    disabled={
+                      isSavingSettings ||
+                      ragSourceStrategy !== "best_band" ||
+                      !inferenceRouting?.reranker_server_id
+                    }
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Minimální reranker skóre</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={ragRerankerMinScore}
+                    onChange={(event) => setRagRerankerMinScore(event.target.value)}
+                    disabled={isSavingSettings || !inferenceRouting?.reranker_server_id}
+                  />
+                </label>
+                <label className="settings-field">
                   <span>Top N</span>
                   <input
                     type="number"
@@ -1633,7 +2384,7 @@ export function App() {
                 <strong>
                   {userSettings?.rag_source_strategy === "top_n"
                     ? `Top ${userSettings.rag_top_n}`
-                    : `Best band ${userSettings?.rag_best_band ?? 0.08}`}
+                    : `Cosine ${userSettings?.rag_best_band ?? 0.08} · reranker ${userSettings?.rag_reranker_best_band ?? 0.10} · minimum ${userSettings?.rag_reranker_min_score ?? 0.50}`}
                 </strong>
               </div>
             </section>
@@ -1645,6 +2396,80 @@ export function App() {
           </form>
         </section>
       )}
+      {voiceSessionId || voiceState === "connecting" || voiceState === "error" ? (
+        <div
+          ref={voiceOverlayRef}
+          className="voice-overlay"
+          role="dialog"
+          aria-label="Hlasový hovor"
+          style={
+            voiceOverlayPosition
+              ? { left: voiceOverlayPosition.x, top: voiceOverlayPosition.y, right: "auto", bottom: "auto" }
+              : undefined
+          }
+        >
+          <div
+            className="voice-overlay-head"
+            onPointerDown={handleVoiceOverlayPointerDown}
+            onPointerMove={handleVoiceOverlayPointerMove}
+            onPointerUp={handleVoiceOverlayPointerUp}
+            onPointerCancel={handleVoiceOverlayPointerUp}
+          >
+            <div>
+              <p className="eyebrow">SpeechCloud hovor</p>
+              <h2>{voiceLabel}</h2>
+            </div>
+            <Mic size={22} />
+          </div>
+          <div className="voice-overlay-body">
+            <div>
+              <span>Poslední dotaz</span>
+              <strong>{voiceTranscript || "Čekám na hlasový vstup..."}</strong>
+            </div>
+            <div>
+              <span>Odpověď</span>
+              <p>{voiceAnswer || "Odpověď se zobrazí po zpracování dotazu."}</p>
+            </div>
+            {voiceSources.length ? (
+              <div className="voice-overlay-sources">
+                <span>Zdroje</span>
+                {voiceSources.map((source) => (
+                  <button key={source.document_id} type="button" onClick={() => handleOpenDocumentSource(source.document_id)}>
+                    <FileText size={14} />
+                    {source.title}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {voiceError && <p className="error-text">{voiceError}</p>}
+          </div>
+          <div className="voice-overlay-actions">
+            <button className="ghost-button" type="button" onClick={handleStopVoiceTts}>
+              Stop TTS
+            </button>
+            <button
+              className={`ghost-button icon-button voice-mute-button ${isVoiceMuted ? "active" : ""}`}
+              type="button"
+              onClick={handleToggleVoiceMute}
+              disabled={!voiceSessionId || voiceState === "connecting" || voiceState === "error"}
+              aria-label={isVoiceMuted ? "Zapnout mikrofon" : "Ztlumit mikrofon"}
+              title={isVoiceMuted ? "Zapnout mikrofon" : "Ztlumit mikrofon"}
+            >
+              {isVoiceMuted ? <MicOff size={19} /> : <Mic size={19} />}
+            </button>
+            <button
+              className="danger-button icon-button voice-end-button"
+              type="button"
+              onClick={handleEndVoiceCall}
+              aria-label="Ukončit hovor"
+              title="Ukončit hovor"
+            >
+              <PhoneOff size={19} />
+            </button>
+          </div>
+          <audio id="voice-audioout" />
+        </div>
+      ) : null}
     </main>
   );
 }
