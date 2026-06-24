@@ -1289,7 +1289,6 @@ export function App() {
       });
       let voiceTokenSent = false;
       let voiceAttached = false;
-      let speechCloudSessionStarted = false;
       let localDialogManagerConnected = false;
       let voiceTokenRetry: number | null = null;
       const clearVoiceTokenRetry = () => {
@@ -1306,13 +1305,10 @@ export function App() {
         if (voiceTokenSent && !force) {
           return;
         }
-        if (!speechCloudSessionStarted || !localDialogManagerConnected) {
-          queueVoiceToken(force);
-          return;
-        }
         try {
           speechCloud.dm_send_message({ data: { type: "voice_session", token: session.token } });
           voiceTokenSent = true;
+          localDialogManagerConnected = true;
         } catch {
           voiceTokenSent = false;
           queueVoiceToken(force);
@@ -1353,7 +1349,6 @@ export function App() {
         handleSpeechCloudConnectionError(message, "Spojení se SpeechCloudem selhalo");
       });
       speechCloud.on("sc_start_session", () => {
-        speechCloudSessionStarted = true;
         sendVoiceToken();
       });
       speechCloud.on("dm_receive_message", (message) => {
@@ -1400,6 +1395,7 @@ export function App() {
         setVoiceState("error");
       });
       speechCloud.init();
+      queueVoiceToken();
     } catch (err) {
       stopDialTone();
       setVoiceError(err instanceof Error ? err.message : "Spusteni hlasoveho hovoru selhalo");
