@@ -1,8 +1,11 @@
 ﻿import uuid
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.inference import _normalize_routing
 from app.core.config import settings
 from app.main import app
 from app.models.settings import UserSettings
@@ -154,6 +157,36 @@ def test_inference_routing_rejects_unconfigured_server(monkeypatch):
         )
 
     assert response.status_code == 422
+
+
+def test_inference_routing_normalizes_stale_server_selection():
+    routing = SimpleNamespace(
+        chat_server_id="server_2",
+        embedding_server_id="server_2",
+        embedding_model="qwen3-embedding:8b",
+        reranker_server_id="server_2",
+        reranker_model="dengcao/Qwen3-Reranker-8B:Q5_K_M",
+        ocr_server_id="server_2",
+        structuring_server_id="server_2",
+    )
+    snapshots = [
+        SimpleNamespace(
+            id="server_1",
+            name="Server 1",
+            reachable=True,
+            models=["phi4", "qwen3-embedding:8b"],
+        )
+    ]
+
+    _normalize_routing(routing, snapshots)
+
+    assert routing.chat_server_id == "server_1"
+    assert routing.ocr_server_id == "server_1"
+    assert routing.structuring_server_id == "server_1"
+    assert routing.embedding_server_id == "server_1"
+    assert routing.embedding_model == "qwen3-embedding:8b"
+    assert routing.reranker_server_id is None
+    assert routing.reranker_model is None
 
 
 def test_authenticated_user_can_send_message_to_selected_model(monkeypatch):

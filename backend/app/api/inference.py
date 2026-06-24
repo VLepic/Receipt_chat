@@ -69,6 +69,86 @@ def _validated_default_model(server_id: str | None, model: str | None, snapshots
     return model if model in server.models else None
 
 
+def _server_ids(snapshots) -> set[str]:
+    return {server.id for server in snapshots}
+
+
+def _reachable_servers(snapshots):
+    return [server for server in snapshots if server.reachable]
+
+
+def _fallback_server_id(server_id: str | None, snapshots) -> str | None:
+    known_ids = _server_ids(snapshots)
+    if server_id in known_ids and _server_reachable(server_id, snapshots):
+        return server_id
+    reachable = _reachable_servers(snapshots)
+    if reachable:
+        return reachable[0].id
+    if server_id in known_ids:
+        return server_id
+    return snapshots[0].id if snapshots else None
+
+
+def _server_with_model(model: str | None, snapshots) -> str | None:
+    if not model:
+        return None
+    for server in _reachable_servers(snapshots):
+        if model in server.models:
+            return server.id
+    return None
+
+
+def _server_reachable(server_id: str | None, snapshots) -> bool:
+    server = next((item for item in snapshots if item.id == server_id), None)
+    return bool(server and server.reachable)
+
+
+def _normalize_model_route(
+    *,
+    current_server_id: str | None,
+    current_model: str | None,
+    default_model: str | None,
+    snapshots,
+    optional: bool = False,
+) -> tuple[str | None, str | None]:
+    candidate_model = current_model or default_model
+    if not snapshots:
+        return current_server_id, candidate_model
+
+    if candidate_model:
+        model_server_id = _server_with_model(candidate_model, snapshots)
+        if model_server_id:
+            return model_server_id, candidate_model
+
+    fallback_server_id = _fallback_server_id(current_server_id, snapshots)
+    if optional and (not candidate_model or current_server_id not in _server_ids(snapshots)):
+        return None, None
+    if optional and candidate_model and _server_reachable(fallback_server_id, snapshots):
+        return None, None
+    return fallback_server_id, None if _server_reachable(fallback_server_id, snapshots) else candidate_model
+
+
+def _normalize_routing(routing, snapshots) -> None:
+    routing.chat_server_id = _fallback_server_id(routing.chat_server_id, snapshots) or routing.chat_server_id
+    routing.ocr_server_id = _fallback_server_id(routing.ocr_server_id, snapshots) or routing.ocr_server_id
+    routing.structuring_server_id = (
+        _fallback_server_id(routing.structuring_server_id, snapshots) or routing.structuring_server_id
+    )
+    routing.embedding_server_id, routing.embedding_model = _normalize_model_route(
+        current_server_id=routing.embedding_server_id,
+        current_model=routing.embedding_model,
+        default_model=settings.rag_embedding_model,
+        snapshots=snapshots,
+    )
+    routing.reranker_server_id, routing.reranker_model = _normalize_model_route(
+        current_server_id=routing.reranker_server_id,
+        current_model=routing.reranker_model,
+        default_model=settings.rag_reranker_model,
+        snapshots=snapshots,
+        optional=True,
+    )
+
+
 def _require_server_model(role: str, server_id: str, model: str | None, snapshots) -> None:
     server = next((item for item in snapshots if item.id == server_id), None)
     if server is None or not server.reachable:
@@ -96,14 +176,7 @@ async def read_inference_configuration(
     routing = await get_or_create_inference_routing(session)
     servers = configured_ollama_servers()
     snapshots = await asyncio.gather(*(_server_snapshot(server) for server in servers))
-    embedding_candidate = routing.embedding_model or settings.rag_embedding_model
-    reranker_candidate = routing.reranker_model or settings.rag_reranker_model
-    routing.embedding_model = _validated_default_model(
-        routing.embedding_server_id, embedding_candidate, snapshots
-    )
-    routing.reranker_model = _validated_default_model(
-        routing.reranker_server_id, reranker_candidate, snapshots
-    )
+    _normalize_routing(routing, snapshots)
     await session.commit()
     return InferenceConfigurationRead(
         servers=list(snapshots),

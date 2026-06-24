@@ -183,8 +183,18 @@ def build_structured_rag_text(document: Document, ocr_result: OcrResult, extract
         name = item.get("name") or item.get("raw")
         user_label = item.get("user_label")
         user_note = item.get("user_note")
+        quantity = item.get("quantity")
+        unit = item.get("unit")
+        unit_price = item.get("unit_price")
         total_price = item.get("total_price")
+        raw = item.get("raw")
         details = []
+        if quantity is not None:
+            details.append(f"mnozstvi: {quantity}{f' {unit}' if unit else ''}")
+        if unit_price is not None:
+            details.append(f"jednotkova cena: {unit_price}")
+        if raw:
+            details.append(f"raw: {raw}")
         if user_label:
             details.append(f"uzivatelsky nazev: {user_label}")
         if user_note:

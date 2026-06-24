@@ -854,6 +854,9 @@ def test_invoice_extraction_schema_distinguishes_address_roles():
     assert "Fakturacni adresa: Na Chrastech 777, 33027 Vejprnice" in rag_text
     assert "Misto nakupu/prodeje:" not in rag_text
     assert "Cislo objednavky: POB26-058499" in rag_text
+    assert "mnozstvi: 1 KS" in rag_text
+    assert "jednotkova cena: 4123.97" in rag_text
+    assert "raw: HECHT5604 Robotická sekačka" in rag_text
 
 
 def test_extraction_prompt_guards_nested_schema_and_payment_conflicts():
