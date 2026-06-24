@@ -105,7 +105,29 @@ type SpeechCloudClient = {
 declare global {
   interface Window {
     SpeechCloud?: new (options: Record<string, unknown>) => SpeechCloudClient;
+    __sp2DeferredWebSocketSendPatched?: boolean;
   }
+}
+
+function installDeferredWebSocketSendPatch() {
+  if (window.__sp2DeferredWebSocketSendPatched) {
+    return;
+  }
+  const originalSend = window.WebSocket.prototype.send;
+  window.WebSocket.prototype.send = function patchedSend(data) {
+    if (this.readyState === WebSocket.CONNECTING) {
+      this.addEventListener(
+        "open",
+        () => {
+          originalSend.call(this, data);
+        },
+        { once: true }
+      );
+      return;
+    }
+    return originalSend.call(this, data);
+  };
+  window.__sp2DeferredWebSocketSendPatched = true;
 }
 
 const TTS_VOICES = [
@@ -1282,6 +1304,7 @@ export function App() {
       if (!window.SpeechCloud) {
         throw new Error("SpeechCloud klient neni dostupny.");
       }
+      installDeferredWebSocketSendPatch();
       const speechCloud = new window.SpeechCloud({
         uri: import.meta.env.VITE_SPEECHCLOUD_MODEL_URI ?? "https://speechcloud.kky.zcu.cz:9443/v1/speechcloud/edu-hds-all",
         tts: "#voice-audioout",
