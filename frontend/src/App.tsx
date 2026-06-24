@@ -1289,12 +1289,34 @@ export function App() {
       });
       let voiceTokenSent = false;
       let voiceAttached = false;
+      let speechCloudSessionStarted = false;
+      let localDialogManagerConnected = false;
+      let voiceTokenRetry: number | null = null;
+      const clearVoiceTokenRetry = () => {
+        if (voiceTokenRetry !== null) {
+          window.clearTimeout(voiceTokenRetry);
+          voiceTokenRetry = null;
+        }
+      };
+      const queueVoiceToken = (force = false) => {
+        clearVoiceTokenRetry();
+        voiceTokenRetry = window.setTimeout(() => sendVoiceToken(force), 250);
+      };
       const sendVoiceToken = (force = false) => {
         if (voiceTokenSent && !force) {
           return;
         }
-        voiceTokenSent = true;
-        speechCloud.dm_send_message({ data: { type: "voice_session", token: session.token } });
+        if (!speechCloudSessionStarted || !localDialogManagerConnected) {
+          queueVoiceToken(force);
+          return;
+        }
+        try {
+          speechCloud.dm_send_message({ data: { type: "voice_session", token: session.token } });
+          voiceTokenSent = true;
+        } catch {
+          voiceTokenSent = false;
+          queueVoiceToken(force);
+        }
       };
       const attachTimeout = window.setTimeout(() => {
         if (!voiceAttached) {
@@ -1313,7 +1335,11 @@ export function App() {
       };
       speechCloudRef.current = speechCloud;
       speechCloud.on("ws_connected", () => setVoiceState("connecting"));
-      speechCloud.on("ws_local_dm_connected", () => setVoiceState("connecting"));
+      speechCloud.on("ws_local_dm_connected", () => {
+        localDialogManagerConnected = true;
+        setVoiceState("connecting");
+        sendVoiceToken();
+      });
       speechCloud.on("error_init", (message) => {
         handleSpeechCloudConnectionError(message, "Inicializace SpeechCloudu selhala");
       });
@@ -1326,12 +1352,16 @@ export function App() {
       speechCloud.on("ws_error", (message) => {
         handleSpeechCloudConnectionError(message, "Spojení se SpeechCloudem selhalo");
       });
-      speechCloud.on("sc_start_session", () => sendVoiceToken());
+      speechCloud.on("sc_start_session", () => {
+        speechCloudSessionStarted = true;
+        sendVoiceToken();
+      });
       speechCloud.on("dm_receive_message", (message) => {
         const record = asRecord(message);
         const firstData = asRecord(record?.data);
         const data = firstData?.type === "voice_status" ? firstData : asRecord(firstData?.data);
         if (data?.state === "connecting" && !voiceAttached) {
+          localDialogManagerConnected = true;
           sendVoiceToken(true);
         }
         if (data?.state === "listening") {
@@ -1355,6 +1385,7 @@ export function App() {
       });
       speechCloud.on("ws_closed", () => {
         window.clearTimeout(attachTimeout);
+        clearVoiceTokenRetry();
         stopDialTone();
         setIsVoiceMuted(false);
         setVoiceState((current) => (current === "ended" ? current : "idle"));
@@ -1362,6 +1393,7 @@ export function App() {
       });
       speechCloud.on("sc_error", (message) => {
         window.clearTimeout(attachTimeout);
+        clearVoiceTokenRetry();
         stopDialTone();
         const record = asRecord(message);
         setVoiceError(typeof record?.error === "string" ? record.error : "SpeechCloud chyba");
@@ -1590,7 +1622,13 @@ export function App() {
           <form className="auth-form" onSubmit={handleAuth}>
             <label>
               Email
-              <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
+              <input
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                type="email"
+                autoComplete="email"
+                required
+              />
             </label>
             <label>
               Heslo
@@ -1598,6 +1636,7 @@ export function App() {
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 type="password"
+                autoComplete={authMode === "login" ? "current-password" : "new-password"}
                 minLength={8}
                 required
               />

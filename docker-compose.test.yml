@@ -7,6 +7,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://sp2:sp2@postgres-test:5432/sp2_test
       SECRET_KEY: test-secret
       OLLAMA_BASE_URL: http://ollama-test:11434
+      RAG_EMBEDDING_MODEL: qwen3-embedding:latest
       DOCUMENT_STORAGE_DIR: /tmp/sp2-test-documents
       OCR_LANGUAGE: ces+eng
       OCR_ENGINE: tesseract
