@@ -16,6 +16,5 @@ example/*
 example/static/*
 !example/static/index.html
 /docs/10-referat-hlasove-dialogove-systemy.md
-/docs/11-production-deploy.md
 /rag.ipynb
 /.env.production

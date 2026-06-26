@@ -103,20 +103,20 @@ Text ma byt citelny a pracovni. Nadpisy nemaji byt zbytecne hero-scale uvnitr ap
 
 ## Layout pro nasi aplikaci
 
-MVP obrazovky:
+Aktualni obrazovky:
 
 - login/registrace;
 - hlavni chat;
-- hlasovy stavovy panel;
+- plovouci hlasovy overlay;
 - seznam konverzaci;
-- nastaveni modelu/Ollama/SpeechCloud;
-- pozdeji dokumenty a OCR upload.
+- nastaveni modelu, TTS hlasu, RAG zdroju a Ollama serveru;
+- dokumenty, upload, OCR, strukturovany JSON a nahled souboru.
 
 Layout ma byt spise aplikacni:
 
 - levy panel pro konverzace/dokumenty;
 - hlavni plocha pro chat;
-- pravy nebo horni panel pro stav hlasu, model a system;
+- plovouci panel pro stav hlasu, posledni rozpoznanou vetu a ovladani hovoru;
 - status line pro SpeechCloud/Ollama stav;
 - bez marketingoveho hero bloku.
 

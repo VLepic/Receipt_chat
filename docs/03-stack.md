@@ -1,6 +1,6 @@
 # Technologický stack
 
-## Doporučený stack pro MVP
+## Aktualni stack
 
 | Vrstva | Doporučení | Poznamka |
 | --- | --- | --- |
@@ -10,30 +10,31 @@
 | Validace | Pydantic | Prirozene sedi k FastAPI |
 | Databaze | PostgreSQL | Stabilni zaklad pro uzivatele, chat a dokumenty |
 | ORM/migrace | SQLAlchemy + Alembic | Kontrolovatelny schema vyvoj |
-| Auth | FastAPI Users + SQLAlchemy adapter | MVP: email + heslo, secure HTTP-only cookie |
+| Auth | FastAPI Users + SQLAlchemy adapter | Email + heslo, secure HTTP-only cookie |
 | Password hashing | pwdlib Argon2 | Vychozi hashing ve FastAPI Users, s kompatibilitou pro bcrypt |
-| Social login | Authlib pro Google/OIDC | Volitelna pozdejsi faze, ne blokator MVP |
+| Social login | Authlib pro Google/OIDC | Volitelne rozsireni, neni soucast aktualniho provozu |
 | LLM runtime | Externi Ollama server | Backend a speech-dialog se pripojuji pres `OLLAMA_BASE_URL`; extrakce dokladu pouziva hybridni OCR text + obrazky |
 | Voice ASR/TTS | SpeechCloud.dialog | Hlavni knihovna pro hlasovy dialog, ASR, TTS a WebSocket dialog manager |
 | RAG index | PostgreSQL + pgvector | Jeden databazovy system pro metadata i embeddings |
-| Background jobs | RQ/Celery + Redis nebo FastAPI background tasks | Redis az ve fazi OCR/RAG pipeline |
+| Background jobs | Samostatny `ocr-worker` kontejner | OCR a zpracovani dokumentu bezi mimo request/response flow |
 | File storage | Lokalni filesystem v dev, pozdeji S3/MinIO | Dokumenty neukladat primo do relacni DB |
 | OCR | Ollama `glm-ocr:latest` + EasyOCR/Tesseract fallback | Vychozi OCR engine vola externi Ollama vision model; EasyOCR (`cs,en`) a Tesseract (`ces+eng`) zustavaji jako lokalni fallback |
 | Dev env | Docker Compose | Databaze, backend, frontend a speech-dialog spustitelne jednotne; Ollama externi nebo volitelny profil |
 
 ## Docker Compose sluzby
 
-Navrzeny lokalni compose stack:
+Lokalni compose stack:
 
 - `frontend`: React/Vite webova aplikace.
 - `backend`: Python/FastAPI API.
 - `speech-dialog`: Python SpeechCloud.dialog manager vychazejici z `example`.
 - `postgres`: PostgreSQL s rozsirenim `pgvector`.
+- `ocr-worker`: worker pro OCR a zpracovani dokumentu.
 - `ollama`: volitelny lokalni LLM server jen pres compose profile `local-ollama`.
-- `redis`: volitelne pro background jobs ve fazi OCR/RAG.
+- `redis`: zatim neni potreba; zustava mozna budoucí volba pro slozitejsi fronty.
 - `minio`: volitelne pro S3-like uloziste dokumentu v pozdejsi fazi.
 
-Pro MVP je povinne `frontend`, `backend`, `speech-dialog` a `postgres`. Ollama se primarne pouziva jako externi server pres `OLLAMA_BASE_URL`. `redis` a `minio` muzou prijit az s OCR pipeline.
+Pro bezny provoz jsou potreba `frontend`, `backend`, `speech-dialog`, `ocr-worker` a `postgres`. Ollama se primarne pouziva jako externi server pres `OLLAMA_BASE_URL`; volitelne lze pripojit druhy Ollama server pro rozdeleni roli. `redis` a `minio` nejsou v aktualnim stacku povinne.
 
 ## Vektorova databaze
 
@@ -46,21 +47,20 @@ Vychozi volba je `PostgreSQL + pgvector`. Technicky to neni samostatna specializ
 
 Specializovanou vektorovou databazi, napriklad Qdrant, Chroma nebo Milvus, dava smysl pridat az ve chvili, kdy pgvector nebude stacit vykonem, filtrovani metadat bude prilis slozite, nebo bude potreba samostatna retrieval infrastruktura. Detailni srovnani je v [Volba vektorove databaze](07-vector-db-choice.md).
 
-## Doporučení pro první implementaci
-
-Pro chat-only MVP staci:
+## Aktualni provozni doporuceni
 
 - FastAPI backend.
 - React/Vite frontend.
-- PostgreSQL s pripravenou moznosti `pgvector`; v chat-only MVP se embeddings jeste nemusi pouzivat.
+- PostgreSQL s `pgvector`.
 - Externi Ollama server dostupny pres konfiguraci `OLLAMA_BASE_URL`.
-- SpeechCloud.dialog manager dostupny na verejne nebo proxy dostupne WebSocket adrese pro SpeechCloud platformu.
+- Volitelny druhy Ollama server pro oddeleni chat/embedding/reranking/OCR/structuring roli.
+- SpeechCloud.dialog manager dostupny pro frontend pres WebSocket. V produkci se pouziva cesta `/ws` proxyovana frontend nginx kontejnerem.
 - Auth pres email + heslo, idealne pres FastAPI Users.
 - Jednoduchy `.env` config.
 
 ## Autentizace
 
-Vychozi varianta pro MVP:
+Vychozi varianta:
 
 - prihlasovaci identita: `email`;
 - heslo: hashovane pres Argon2;
@@ -71,7 +71,7 @@ Vychozi varianta pro MVP:
 
 Google login:
 
-- nepridavat do prvniho MVP jako povinnost;
+- nepridavat jako povinnost;
 - pripravit datovy model tak, aby pozdeji slo pripojit OAuth ucet ke stejnemu uzivateli;
 - pokud se prida, pouzit `Authlib` pro Google OpenID Connect/OAuth flow.
 
@@ -103,6 +103,21 @@ Kandidati a aktualni nastaveni pro embeddings v RAG fazi:
 - Pokud `RAG_EMBEDDING_MODEL` neni nastaveny nebo tabulka `document_chunks` jeste neexistuje, RAG se bezpecne preskoci a chat funguje bez dokumentoveho kontextu.
 - Ollama embedding model lze pozdeji zmenit podle kvality hledani nad ceskymi dotazy a doklady.
 - Alternativne specializovany sentence-transformer model pres Python sluzbu.
+
+Reranker:
+
+- Volitelne se pouziva model kompatibilni s generovanim `yes`/`no` nad dvojici dotaz-dokument.
+- Backend z `logprobs` tokenu `yes` a `no` pocita skore relevance.
+- Minimalni prah je prakticky vhodne drzet nizko, napr. okolo `0.1`, aby fungovaly i kratke navazujici dotazy.
+- Reranker lze pres nastaveni aplikace priradit na jiny Ollama server nez chat nebo embedding.
+
+## Produkcni compose
+
+Produkce pouziva `docker-compose.prod.yml`, produkcni frontend image a externi reverse proxy. Frontend nginx zaroven proxyuje `/ws` na interni `speech-dialog:8888/ws`, takze verejna SpeechCloud DM URL pro web muze zustat relativni:
+
+```env
+VITE_SPEECH_DIALOG_LOCAL_DM=/ws
+```
 
 ## Alternativy
 
