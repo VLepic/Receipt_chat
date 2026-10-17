@@ -6,6 +6,7 @@ from fastapi import HTTPException, status
 from app.core.config import settings
 from app.services.ollama_auth import ollama_auth
 from app.services.ollama_servers import OllamaServerConfig, get_ollama_server
+from app.services.openai_compatible import OpenAICompatibleClient
 
 
 def _ollama_error_detail(response: httpx.Response) -> str | None:
@@ -18,16 +19,33 @@ def _ollama_error_detail(response: httpx.Response) -> str | None:
 
 
 class OllamaClient:
-    def __init__(self, server: OllamaServerConfig | None = None) -> None:
+    def __init__(self, server: OllamaServerConfig | None = None, *, timeout: float | None = None) -> None:
         self.server = server or get_ollama_server("server_1")
         self.base_url = self.server.base_url
         self.model = settings.ollama_model
-        self.timeout = settings.ollama_timeout_seconds
+        self.timeout = timeout if timeout is not None else settings.ollama_timeout_seconds
+        self.openai = OpenAICompatibleClient(self.server, self.timeout) if self.server.api_type == "openai" else None
 
     def _auth(self) -> httpx.Auth | None:
         return ollama_auth(self.server)
 
+    async def resolve_model(self, preferred: str | None = None) -> str:
+        if preferred:
+            return preferred
+        if self.model:
+            return self.model
+        models = await self.list_models()
+        if not models:
+            raise HTTPException(422, "Na vybraném serveru není dostupný žádný model.")
+        return str(models[0]["name"])
+
     async def health(self) -> dict[str, str | bool]:
+        if self.openai:
+            try:
+                await self.openai.list_models(self.model)
+                return {"status": "ok", "reachable": True}
+            except HTTPException as exc:
+                return {"status": "error", "reachable": False, "detail": str(exc.detail)}
         try:
             async with httpx.AsyncClient(timeout=5.0, auth=self._auth()) as client:
                 response = await client.get(f"{self.base_url}/api/tags")
@@ -37,6 +55,8 @@ class OllamaClient:
             return {"status": "error", "reachable": False, "detail": str(exc)}
 
     async def list_models(self) -> list[dict[str, str | bool]]:
+        if self.openai:
+            return await self.openai.list_models(self.model)
         try:
             async with httpx.AsyncClient(timeout=5.0, auth=self._auth()) as client:
                 response = await client.get(f"{self.base_url}/api/tags")
@@ -77,6 +97,9 @@ class OllamaClient:
         return models
 
     async def chat(self, messages: list[dict[str, object]], model: str | None = None) -> str:
+        model = await self.resolve_model(model)
+        if self.openai:
+            return await self.openai.chat(messages, model or self.model)
         payload = {
             "model": model or self.model,
             "messages": messages,
@@ -116,6 +139,8 @@ class OllamaClient:
         embedding_model = model or settings.rag_embedding_model
         if not embedding_model:
             return []
+        if self.openai:
+            return await self.openai.embed(text, embedding_model)
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout, auth=self._auth()) as client:
@@ -153,6 +178,8 @@ class OllamaClient:
         return [float(value) for value in embedding]
 
     async def rerank_score(self, query: str, document: str, model: str) -> float:
+        if self.openai:
+            raise HTTPException(422, "Reranking currently requires an Ollama server with a dedicated reranker model")
         prompt = (
             "<|im_start|>system\n"
             "Judge whether the Document meets the requirements based on the Query and the Instruct provided. "
@@ -174,7 +201,7 @@ class OllamaClient:
             "top_logprobs": 10,
         }
         try:
-            async with httpx.AsyncClient(timeout=settings.rag_reranker_timeout_seconds, auth=self._auth()) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, auth=self._auth()) as client:
                 response = await client.post(f"{self.base_url}/api/generate", json=payload)
                 response.raise_for_status()
                 data = response.json()

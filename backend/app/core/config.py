@@ -1,33 +1,38 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_name: str = "SP2 Assistant"
+    app_name: str = "ReceiptChat"
     environment: str = "local"
     secret_key: str = Field(default="change-me-in-env")
     database_url: str = Field(
         default="postgresql+asyncpg://sp2:sp2@postgres:5432/sp2"
     )
-    cors_origins: list[str] = Field(default=["http://localhost:5173", "http://127.0.0.1:5173"])
+    cors_origins: list[str] = Field(default=[])
 
     cookie_name: str = "sp2_session"
     cookie_secure: bool = False
     cookie_samesite: str = "lax"
 
-    ollama_base_url: str = "http://ollama:11434"
-    ollama_model: str = "phi4"
+    ollama_base_url: str = ""
+    ollama_api_type: Literal["ollama", "openai"] = "ollama"
+    ollama_api_key: str | None = None
+    ollama_model: str = ""
     ollama_username: str | None = None
     ollama_password: str | None = None
     ollama_auth_scheme: str = "digest"
-    ollama_timeout_seconds: float = 60.0
+    ollama_timeout_seconds: float = 180.0
     ollama_server_1_name: str = "Server 1"
     ollama_server_2_name: str = "Server 2"
     ollama_server_2_base_url: str | None = None
+    ollama_server_2_api_type: Literal["ollama", "openai"] = "ollama"
+    ollama_server_2_api_key: str | None = None
     ollama_server_2_username: str | None = None
     ollama_server_2_password: str | None = None
     ollama_server_2_auth_scheme: str = "digest"

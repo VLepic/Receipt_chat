@@ -12,7 +12,7 @@ Kod chatu nebude volat Ollama primo z mnoha mist. Vznikne `llm` modul, ktery sch
 
 ### D2a: Ollama bude primarne externi server
 
-Backend a SpeechCloud dialog manager se budou pripojovat na externi Ollama endpoint pres `OLLAMA_BASE_URL`. Lokalni Ollama kontejner v Docker Compose zustava pouze volitelny profil pro fallback nebo offline vyvoj.
+Backend podporuje externi Ollama i OpenAI kompatibilni endpoint. Protokol, URL a pristupove udaje kazdeho serveru nastavuje spravce v GUI. Modelove servery nejsou soucasti Compose stacku.
 
 ### D3: RAG bude oddelená služba uvnitř backendu
 
@@ -28,11 +28,7 @@ Pro RAG se nejdriv pouzije `pgvector` v PostgreSQL kontejneru. Specializovana ve
 
 ### D6: Lokalni prostredi pobezi pres Docker Compose
 
-Backend, frontend a PostgreSQL budou spoustene jako kontejnery pres Docker Compose. Speech-dialog pobezi take v compose. Ollama bude primarne externi endpoint a lokalni kontejner bude jen volitelny profil. Pozdeji se do compose stacku muze pridat Redis pro job queue a MinIO pro dokumentove soubory.
-
-### D7: SpeechCloud bude hlavni hlasova vrstva
-
-Pro hlasove rozhrani se pouzije SpeechCloud.dialog podle dokumentace `docs/SpeechCloud.dialog.md` a ukazek v `example`. Vlastni speech-to-text/text-to-speech kod se nebude v prvni fazi implementovat mimo SpeechCloud.
+Frontend, backend API a OCR worker bezi jako procesy jednoho aplikacniho kontejneru; PostgreSQL zustava samostatne. Ollama i llama.cpp jsou externi endpointy. Pozdeji lze pridat Redis pro job queue a MinIO pro dokumentove soubory.
 
 ### D8: MVP prihlasovani bude email + heslo
 
@@ -58,15 +54,13 @@ Pokud model v chatu pouzije data z dokladu, odpoved musi umet vratit odkaz na de
 
 1. Ma byt aplikace primarne lokalni pro jednoho uzivatele, nebo od zacatku multi-user?
 2. Ma byt frontend React/Vite, nebo chces Next.js?
-3. Jaka bude produkcni hodnota `OLLAMA_BASE_URL` a vyzadovana autentizace?
+3. Ktere modelove servery a autentizaci nakonfigurovat v GUI pro produkcni provoz?
 4. Jake typy dokumentu budou prvni: PDF faktury, fotky uctenek, skeny, nebo vse najednou?
 5. Je prioritou cestina, nebo i anglictina/nemcina na fakturach?
 6. Chces ve fazi RAG citace na konkretni dokument a pasaz?
 7. Ktere modely budou vychozi pro chat, OCR post-processing, extrakci a embeddings?
 8. Ma se neschvaleny popisek pouzivat v RAG, nebo az po rucnim schvaleni?
 9. Ma aplikace umet export do CSV/Excel nebo napojeni na ucetni system?
-10. Jake bude finalni SpeechCloud application id a verejne dostupna URL/port dialog manageru?
-11. Bude webovy klient pouzivat SpeechCloud proxy statickych souboru, nebo vlastni frontend s napojenim na SpeechCloud JS?
 
 ## Rizika
 
@@ -77,4 +71,4 @@ Pokud model v chatu pouzije data z dokladu, odpoved musi umet vratit odkaz na de
 
 ## Doporučené další rozhodnutí
 
-Nejdrive rozhodnout frontend framework a provozni topologii pro SpeechCloud/Ollama. Auth metoda i transport jsou rozhodnute: email + heslo + secure HTTP-only cookie.
+Pro prakticky provoz overit presny model z `/v1/models`, podporu obrazku a vykon pomocnych modelu na CPU. Auth metoda i transport jsou rozhodnute: email + heslo + secure HTTP-only cookie.

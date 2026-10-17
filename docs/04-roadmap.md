@@ -1,5 +1,9 @@
 # Fáze vývoje
 
+Tento dokument zachovava historii etap. Aktualni provozni konfigurace je v README a dokumentu 11. Aktualni zmena: dva protokoly inference serveru, sdileny GPU model pro chat a strukturovani, CPU pomocne modely.
+
+Overeni aktualni zmeny: build frontendu, mockovane HTTP kontrakty obou protokolu, odmítnuti odstraneneho API, upgrade/downgrade databazove migrace a kontrola Compose konfigurace.
+
 ## Pravidlo pro testy
 
 Kazda zmena roadmapy musi mit odpovidajici zmenu testovaci strategie. Pokud se do faze prida nova funkcionalita, musi se doplnit minimalne jeden testovaci bod, ktery overi jeji hlavni riziko.
@@ -22,11 +26,11 @@ Testy:
 - Pri zmene architektury aktualizovat roadmapu, stack a backlog.
 - Pri zmene scope zkontrolovat, ze testovaci body v roadmapě stale odpovidaji realnemu planu.
 
-## Fáze 1: textovy chat + SpeechCloud voice MVP
+## Fáze 1: textovy chat
 
-Cil: prihlaseny uzivatel muze chatovat s Ollama modelem pres webove rozhrani a hlasove pres SpeechCloud.
+Cil: prihlaseny uzivatel muze chatovat s Ollama modelem pres webove rozhrani.
 
-Status: hotovo. Existuje prvni skeleton pro `backend`, `frontend`, `speech-dialog`, Docker Compose a zakladni testy. UI podporuje login a textovy chat bez RAG; rozsirena sprava vlaken zustava pro pozdejsi krok.
+Status: hotovo. Existuje prvni skeleton pro `backend`, `frontend`, Docker Compose a zakladni testy. UI podporuje login a textovy chat bez RAG; rozsirena sprava vlaken zustava pro pozdejsi krok.
 
 Scope:
 
@@ -36,9 +40,6 @@ Scope:
 - Zakladni chat UI.
 - API endpoint pro odeslani zpravy.
 - Napojeni na Ollama.
-- SpeechCloud dialog manager podle ukazek v `example`.
-- ASR vstup ze SpeechCloud do Ollama chatu.
-- TTS vystup odpovedi pres SpeechCloud.
 - Ulozeni konverzaci a zprav.
 - Konfigurace pres `.env`.
 
@@ -47,7 +48,6 @@ Definition of Done:
 - Aplikacni kontejnery lze spustit lokalne a pripojit na externi Ollama server.
 - Uzivatel se prihlasi a zalozi konverzaci.
 - Odpovedi prichazeji z Ollama serveru.
-- Hlasovy vstup a vystup funguje pres SpeechCloud testovaci/proxy prostredi.
 - Historie se po refreshi neztrati.
 - Chyby Ollama serveru jsou uzivatelsky srozumitelne.
 
@@ -57,9 +57,8 @@ Testy:
 - Backend API testy pro registraci, login, logout, aktualniho uzivatele a chranene endpointy.
 - Backend API testy pro vytvoreni konverzace, odeslani zpravy a nacteni historie.
 - Mockovany test Ollama adapteru pro uspesnou odpoved, timeout a chybu serveru.
-- Smoke test SpeechCloud dialog manageru: start kontejneru, dostupnost `/ws`, inicializace bez padu.
 - Frontend testy pro login formular, stav prihlaseni a zakladni chat flow.
-- Docker Compose test: spustit testovaci stack a overit, ze backend, frontend, postgres a speech-dialog nastartuji.
+- Docker Compose test: spustit testovaci stack a overit, ze backend, frontend a postgres nastartuji.
 
 ## Fáze 2: stabilizace backendu a API
 
@@ -234,23 +233,3 @@ Testy:
 - Test rucni opravy hodnot a auditni stopy zmeny.
 - Test schvaleni popisku a zmeny review stavu.
 - Test, ze nejiste hodnoty maji confidence a nejsou automaticky prezentovane jako jiste.
-
-## Fáze 7: pokrocile hlasove rozhrani
-
-Cil: rozsireni hlasoveho ovladani nad zakladni SpeechCloud MVP.
-
-Scope:
-
-- Pokrocile ovladani mikrofonu ve vlastnim frontendu.
-- Napojeni vlastniho kodu pro text-to-speech, pokud bude potreba mimo SpeechCloud.
-- Frontend ovladani mikrofonu.
-- Stav nahravani a prehravani.
-- Prace s chybami hlasovych sluzeb.
-
-Testy:
-
-- Frontend test stavu mikrofonu: idle, recording, processing, playing, error.
-- Test preruseni nahravani a preruseni TTS.
-- Mockovany test SpeechCloud udalosti ve frontend vrstve.
-- Integration smoke test hlasove session pres SpeechCloud testovaci/proxy prostredi.
-- Test fallbacku na textovy chat pri chybe hlasove vrstvy.

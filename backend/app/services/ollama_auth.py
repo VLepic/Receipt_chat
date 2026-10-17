@@ -17,6 +17,6 @@ def ollama_auth(server: OllamaServerConfig | None = None) -> httpx.Auth | None:
     username = server.username if server else settings.ollama_username
     password = server.password if server else settings.ollama_password
     scheme = server.auth_scheme if server else settings.ollama_auth_scheme
-    if username and password:
+    if scheme != "none" and username and password:
         return _cached_auth(scheme, username, password)
     return None

@@ -6,10 +6,6 @@ import {
   GripVertical,
   LogOut,
   MessageSquare,
-  Mic,
-  MicOff,
-  PhoneCall,
-  PhoneOff,
   Plus,
   Save,
   Send,
@@ -23,7 +19,6 @@ import {
   ChangeEvent,
   DragEvent,
   FormEvent,
-  PointerEvent as ReactPointerEvent,
   ReactNode,
   useEffect,
   useMemo,
@@ -32,7 +27,6 @@ import {
 } from "react";
 
 import {
-  ChatSource,
   Conversation,
   ConversationDetail,
   DocumentExtraction,
@@ -42,17 +36,17 @@ import {
   InferenceRole,
   InferenceRouting,
   OcrResult,
+  ProcessingOptions,
+  ServerSettings,
   OllamaModel,
   User,
   UserSettings,
   addDocumentFile,
   createConversation,
-  createVoiceSession,
   deleteConversation,
   deleteDocument,
   deleteDocumentFile,
   documentFileDownloadUrl,
-  endVoiceSession,
   getDocumentExtraction,
   getDocumentOcr,
   getInferenceConfiguration,
@@ -72,21 +66,16 @@ import {
   updateDocumentExtraction,
   updateInferenceConfiguration,
   updateUserSettings,
+  updateProcessingOptions,
+  updateInferenceServers,
   uploadDocument
 } from "./lib/api";
 
 type AuthMode = "login" | "register";
-type VoiceState = "idle" | "connecting" | "listening" | "recognizing" | "thinking" | "speaking" | "error" | "ended";
 type AppView = "chat" | "documents" | "settings";
 type DocumentTextView = "overview" | "structured" | "raw" | "ocr";
 type JsonRecord = Record<string, unknown>;
 type JsonPath = Array<string | number>;
-type DialToneController = {
-  context: AudioContext;
-  intervalId: number;
-};
-type VoiceOverlayPosition = { x: number; y: number };
-type VoiceOverlayDrag = VoiceOverlayPosition & { pointerId: number };
 const INFERENCE_ROLES: Array<{ id: InferenceRole; label: string; description: string }> = [
   { id: "chat", label: "Chat", description: "Rozhodování agenta a odpovědi" },
   { id: "embedding", label: "Embedding", description: "Vektory pro RAG" },
@@ -94,52 +83,6 @@ const INFERENCE_ROLES: Array<{ id: InferenceRole; label: string; description: st
   { id: "ocr", label: "OCR", description: "Rozpoznání textu z obrazu" },
   { id: "structuring", label: "Strukturace", description: "JSON a popisek dokladu" }
 ];
-type SpeechCloudClient = {
-  on: (event: string, handler: (payload?: unknown) => void) => void;
-  init: () => void;
-  dm_send_message: (payload: { data: unknown }) => void;
-  tts_stop: () => void;
-  terminate: () => void;
-};
-
-declare global {
-  interface Window {
-    SpeechCloud?: new (options: Record<string, unknown>) => SpeechCloudClient;
-    __sp2DeferredWebSocketSendPatched?: boolean;
-  }
-}
-
-function installDeferredWebSocketSendPatch() {
-  if (window.__sp2DeferredWebSocketSendPatched) {
-    return;
-  }
-  const originalSend = window.WebSocket.prototype.send;
-  window.WebSocket.prototype.send = function patchedSend(data) {
-    if (this.readyState === WebSocket.CONNECTING) {
-      this.addEventListener(
-        "open",
-        () => {
-          originalSend.call(this, data);
-        },
-        { once: true }
-      );
-      return;
-    }
-    return originalSend.call(this, data);
-  };
-  window.__sp2DeferredWebSocketSendPatched = true;
-}
-
-const TTS_VOICES = [
-  { value: "Iva210", label: "Iva" },
-  { value: "Jan210", label: "Jan" },
-  { value: "Jiri210", label: "Jiří" },
-  { value: "Katerina210", label: "Kateřina" },
-  { value: "Radka210", label: "Radka" },
-  { value: "Stanislav210", label: "Stanislav" },
-  { value: "Alena210", label: "Alena" }
-];
-
 const FIELD_LABELS: Record<string, string> = {
   document_type: "Typ dokladu",
   issue_date: "Datum vystaveni",
@@ -200,29 +143,6 @@ const FIELD_LABELS: Record<string, string> = {
 
 function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
-}
-
-function voiceTranscriptFromPayload(value: unknown, depth = 0): string | null {
-  if (depth > 3) {
-    return null;
-  }
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-  const record = asRecord(value);
-  if (!record) {
-    return null;
-  }
-  for (const key of ["transcript", "word_1best", "utterance", "text"]) {
-    const candidate = record[key];
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate.trim();
-    }
-  }
-  return (
-    voiceTranscriptFromPayload(record.result, depth + 1) ??
-    voiceTranscriptFromPayload(record.data, depth + 1)
-  );
 }
 
 function fieldLabel(key: string | number): string {
@@ -477,28 +397,6 @@ function documentCatalogStatus(document: DocumentItem, extraction: DocumentExtra
   return document.status;
 }
 
-let speechCloudScriptPromise: Promise<void> | null = null;
-
-function loadSpeechCloudScript(): Promise<void> {
-  if (window.SpeechCloud) {
-    return Promise.resolve();
-  }
-  if (speechCloudScriptPromise) {
-    return speechCloudScriptPromise;
-  }
-  const scriptUrl =
-    import.meta.env.VITE_SPEECHCLOUD_SCRIPT_URL ?? "https://speechcloud.kky.zcu.cz:9444/speechcloud-3.0.js";
-  speechCloudScriptPromise = new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = scriptUrl;
-    script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error("Nepodarilo se nacist SpeechCloud klienta."));
-    document.head.appendChild(script);
-  });
-  return speechCloudScriptPromise;
-}
-
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>("login");
@@ -506,24 +404,19 @@ export function App() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
-  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
-  const [voiceSessionId, setVoiceSessionId] = useState<string | null>(null);
-  const [voiceTranscript, setVoiceTranscript] = useState("");
-  const [voiceAnswer, setVoiceAnswer] = useState("");
-  const [voiceSources, setVoiceSources] = useState<ChatSource[]>([]);
-  const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [isVoiceMuted, setIsVoiceMuted] = useState(false);
-  const [voiceOverlayPosition, setVoiceOverlayPosition] = useState<VoiceOverlayPosition | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<ConversationDetail | null>(null);
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [inferenceConfiguration, setInferenceConfiguration] = useState<InferenceConfiguration | null>(null);
   const [inferenceRouting, setInferenceRouting] = useState<InferenceRouting | null>(null);
   const [isSavingInference, setIsSavingInference] = useState(false);
+  const [processingOptions, setProcessingOptions] = useState<ProcessingOptions | null>(null);
+  const [isSavingProcessing, setIsSavingProcessing] = useState(false);
+  const [serverSettings, setServerSettings] = useState<ServerSettings[]>([]);
+  const [isSavingServers, setIsSavingServers] = useState(false);
   const [selectedModel, setSelectedModel] = useState("");
   const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
   const [defaultChatModel, setDefaultChatModel] = useState("");
-  const [ttsVoice, setTtsVoice] = useState("");
   const [ocrProcessingModel, setOcrProcessingModel] = useState("");
   const [ragSourceStrategy, setRagSourceStrategy] = useState<"best_band" | "top_n">("best_band");
   const [ragBestBand, setRagBestBand] = useState("0.08");
@@ -551,10 +444,6 @@ export function App() {
   const [documentTextView, setDocumentTextView] = useState<DocumentTextView>("overview");
   const [structuredDraft, setStructuredDraft] = useState<unknown | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
-  const dialToneRef = useRef<DialToneController | null>(null);
-  const speechCloudRef = useRef<SpeechCloudClient | null>(null);
-  const voiceOverlayRef = useRef<HTMLDivElement | null>(null);
-  const voiceOverlayDragRef = useRef<VoiceOverlayDrag | null>(null);
 
   const activeDocument = useMemo(
     () => documents.find((document) => document.id === activeDocumentId) ?? documents[0] ?? null,
@@ -610,45 +499,10 @@ export function App() {
     };
   }, [activeExtraction, activeOcrResult, documentTextView, structuredDocument]);
 
-  const voiceLabel = useMemo(() => {
-    const labels: Record<VoiceState, string> = {
-      idle: "SpeechCloud pripraven",
-      connecting: "Pripojuji hovor",
-      listening: "Posloucham",
-      recognizing: "Rozpoznavam",
-      thinking: "Model premysli",
-      speaking: "Prehravam odpoved",
-      error: "Hlasova chyba",
-      ended: "Hovor ukoncen"
-    };
-    return labels[voiceState];
-  }, [voiceState]);
-
   useEffect(() => {
     getMe()
       .then((me) => setUser(me))
       .catch(() => setUser(null));
-  }, []);
-
-  useEffect(() => {
-    const keepVoiceOverlayVisible = () => {
-      const overlay = voiceOverlayRef.current;
-      if (!overlay) {
-        return;
-      }
-      setVoiceOverlayPosition((current) => {
-        if (!current) {
-          return current;
-        }
-        const margin = 8;
-        return {
-          x: Math.min(Math.max(margin, current.x), Math.max(margin, window.innerWidth - overlay.offsetWidth - margin)),
-          y: Math.min(Math.max(margin, current.y), Math.max(margin, window.innerHeight - overlay.offsetHeight - margin))
-        };
-      });
-    };
-    window.addEventListener("resize", keepVoiceOverlayVisible);
-    return () => window.removeEventListener("resize", keepVoiceOverlayVisible);
   }, []);
 
   useEffect(() => {
@@ -658,10 +512,11 @@ export function App() {
       setModels([]);
       setInferenceConfiguration(null);
       setInferenceRouting(null);
+      setProcessingOptions(null);
+      setServerSettings([]);
       setSelectedModel("");
       setUserSettings(null);
       setDefaultChatModel("");
-      setTtsVoice("");
       setOcrProcessingModel("");
       setRagRerankerBestBand("0.10");
       setRagRerankerMinScore("0.50");
@@ -692,7 +547,7 @@ export function App() {
             modelResult.value[0];
           setSelectedModel(defaultModel?.name ?? "");
         } else {
-          setError("Nepodarilo se nacist seznam Ollama modelu.");
+          setError("Nepodařilo se načíst seznam modelů.");
         }
 
         if (documentsResult.status === "fulfilled") {
@@ -704,7 +559,6 @@ export function App() {
         if (settingsResult.status === "fulfilled") {
           setUserSettings(settingsResult.value);
           setDefaultChatModel(settingsResult.value.default_chat_model ?? "");
-          setTtsVoice(settingsResult.value.tts_voice ?? "");
           setOcrProcessingModel(settingsResult.value.ocr_processing_model ?? "");
           setRagSourceStrategy(settingsResult.value.rag_source_strategy);
           setRagBestBand(String(settingsResult.value.rag_best_band));
@@ -716,6 +570,12 @@ export function App() {
         if (inferenceResult.status === "fulfilled") {
           setInferenceConfiguration(inferenceResult.value);
           setInferenceRouting(inferenceResult.value.routing);
+          setProcessingOptions(inferenceResult.value.processing);
+          setServerSettings(inferenceResult.value.server_settings);
+          if (user.is_superuser && inferenceResult.value.servers.length === 0) {
+            setActiveView("settings");
+            setError(null);
+          }
         }
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Nacteni chatu selhalo"))
@@ -1070,7 +930,6 @@ export function App() {
     try {
       const saved = await updateUserSettings({
         default_chat_model: defaultChatModel.trim() || null,
-        tts_voice: ttsVoice.trim() || null,
         ocr_processing_model: ocrProcessingModel.trim() || null,
         rag_source_strategy: ragSourceStrategy,
         rag_best_band: Number(ragBestBand),
@@ -1080,7 +939,6 @@ export function App() {
       });
       setUserSettings(saved);
       setDefaultChatModel(saved.default_chat_model ?? "");
-      setTtsVoice(saved.tts_voice ?? "");
       setOcrProcessingModel(saved.ocr_processing_model ?? "");
       setRagSourceStrategy(saved.rag_source_strategy);
       setRagBestBand(String(saved.rag_best_band));
@@ -1130,19 +988,19 @@ export function App() {
       return;
     }
     setError(null);
-    if (!inferenceRouting.embedding_model) {
-      setError("Vyberte platný embedding model na přiřazeném serveru.");
-      return;
-    }
     if (inferenceRouting.reranker_server_id && !inferenceRouting.reranker_model) {
       setError("Vyberte platný reranker model na přiřazeném serveru.");
       return;
     }
     setIsSavingInference(true);
     try {
-      const saved = await updateInferenceConfiguration(inferenceRouting);
+      const saved = await updateInferenceConfiguration({
+        ...inferenceRouting,
+        ...(processingOptions ? { processing: processingOptions } : {})
+      });
       setInferenceConfiguration(saved);
       setInferenceRouting(saved.routing);
+      setProcessingOptions(saved.processing);
       const refreshedModels = await listModels();
       setModels(refreshedModels);
       const effectiveChatModel =
@@ -1155,6 +1013,62 @@ export function App() {
     } finally {
       setIsSavingInference(false);
     }
+  }
+
+  async function handleSaveServers() {
+    setIsSavingServers(true);
+    setError(null);
+    try {
+      const saved = await updateInferenceServers(serverSettings);
+      setInferenceConfiguration(saved);
+      setInferenceRouting(saved.routing);
+      setServerSettings(saved.server_settings);
+      if (saved.servers.some((server) => server.reachable)) {
+        const available = await listModels();
+        setModels(available);
+        setSelectedModel(available.find((model) => model.name === defaultChatModel)?.name ?? available[0]?.name ?? "");
+      } else {
+        setModels([]);
+        setSelectedModel("");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Uložení serverů selhalo.");
+    } finally {
+      setIsSavingServers(false);
+    }
+  }
+
+  async function handleSaveProcessing() {
+    if (!processingOptions) return;
+    setIsSavingProcessing(true);
+    setError(null);
+    try {
+      setProcessingOptions(await updateProcessingOptions(processingOptions));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Uložení zpracování selhalo.");
+    } finally {
+      setIsSavingProcessing(false);
+    }
+  }
+
+  function updateProcessing<K extends keyof ProcessingOptions>(key: K, value: ProcessingOptions[K]) {
+    setProcessingOptions((current) => current ? { ...current, [key]: value } : current);
+  }
+
+  function updateServer<K extends keyof ServerSettings>(id: string, key: K, value: ServerSettings[K]) {
+    setServerSettings((current) => current.map((server) => {
+      if (server.id !== id) return server;
+      const updated = { ...server, [key]: value };
+      if (["base_url", "api_type", "auth_scheme", "username"].includes(key) && server[key] !== value) {
+        updated.password = "";
+        updated.api_key = "";
+        updated.has_password = false;
+        updated.has_api_key = false;
+      }
+      if (key === "password" && value === "") updated.has_password = false;
+      if (key === "api_key" && value === "") updated.has_api_key = false;
+      return updated;
+    }));
   }
 
   async function handleSend(event: FormEvent<HTMLFormElement>) {
@@ -1180,321 +1094,6 @@ export function App() {
       return;
     } finally {
       setIsSending(false);
-    }
-  }
-
-  function stopDialTone() {
-    const controller = dialToneRef.current;
-    if (!controller) {
-      return;
-    }
-    window.clearInterval(controller.intervalId);
-    dialToneRef.current = null;
-    void controller.context.close();
-  }
-
-  function startDialTone() {
-    stopDialTone();
-    const AudioContextConstructor =
-      window.AudioContext ??
-      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextConstructor) {
-      return;
-    }
-
-    const context = new AudioContextConstructor();
-    const playPulse = () => {
-      if (context.state === "closed") {
-        return;
-      }
-      const now = context.currentTime;
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      oscillator.type = "sine";
-      oscillator.frequency.setValueAtTime(425, now);
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.035, now + 0.03);
-      gain.gain.setValueAtTime(0.035, now + 0.9);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 1);
-      oscillator.connect(gain);
-      gain.connect(context.destination);
-      oscillator.start(now);
-      oscillator.stop(now + 1.05);
-    };
-
-    void context.resume().then(playPulse);
-    const intervalId = window.setInterval(playPulse, 4_000);
-    dialToneRef.current = { context, intervalId };
-  }
-
-  function handleVoiceStatus(payload: unknown) {
-    const data = asRecord(payload);
-    if (!data || data.type !== "voice_status") {
-      return;
-    }
-    const state = typeof data.state === "string" ? data.state : "";
-    if (state === "muted") {
-      setIsVoiceMuted(true);
-    } else if (state === "unmuted") {
-      setIsVoiceMuted(false);
-      setVoiceState("listening");
-    }
-    if (state === "listening" || state === "error" || state === "ended") {
-      stopDialTone();
-    }
-    if (state === "connecting" || state === "listening" || state === "thinking" || state === "speaking" || state === "error" || state === "ended") {
-      setVoiceState(state);
-    } else if (state === "asr_result") {
-      setVoiceState("recognizing");
-    } else if (state === "assistant_response") {
-      setVoiceState("speaking");
-    }
-    const transcript = voiceTranscriptFromPayload(data);
-    if (transcript) {
-      setVoiceTranscript(transcript);
-    }
-    if (typeof data.answer === "string") {
-      setVoiceAnswer(data.answer);
-    }
-    if (Array.isArray(data.sources)) {
-      setVoiceSources(data.sources as ChatSource[]);
-    }
-    if (typeof data.message === "string") {
-      if (state === "error") {
-        setVoiceError(data.message);
-      }
-    }
-    const conversation = asRecord(data.conversation);
-    if (conversation) {
-      const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
-      const lastUserMessage = [...messages]
-        .reverse()
-        .map(asRecord)
-        .find((message) => message?.role === "user" && typeof message.content === "string");
-      if (typeof lastUserMessage?.content === "string" && lastUserMessage.content.trim()) {
-        setVoiceTranscript(lastUserMessage.content.trim());
-      }
-      promoteConversation(conversation as ConversationDetail);
-    }
-  }
-
-  async function handleStartVoiceCall() {
-    if (!user || voiceSessionId) {
-      return;
-    }
-    setActiveView("chat");
-    setError(null);
-    setVoiceError(null);
-    setVoiceTranscript("");
-    setVoiceAnswer("");
-    setVoiceSources([]);
-    setIsVoiceMuted(false);
-    setVoiceState("connecting");
-    startDialTone();
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error("Prohlížeč nepodporuje přístup k mikrofonu.");
-      }
-      const microphoneStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      microphoneStream.getTracks().forEach((track) => track.stop());
-      const session = await createVoiceSession(activeConversation?.id ?? null);
-      setVoiceSessionId(session.voice_session_id);
-      promoteConversation(session.conversation);
-      await loadSpeechCloudScript();
-      if (!window.SpeechCloud) {
-        throw new Error("SpeechCloud klient neni dostupny.");
-      }
-      installDeferredWebSocketSendPatch();
-      const speechCloud = new window.SpeechCloud({
-        uri: import.meta.env.VITE_SPEECHCLOUD_MODEL_URI ?? "https://speechcloud.kky.zcu.cz:9443/v1/speechcloud/edu-hds-all",
-        tts: "#voice-audioout",
-        local_dm: import.meta.env.VITE_SPEECH_DIALOG_LOCAL_DM ?? "ws://localhost:8888/ws"
-      });
-      let voiceTokenSent = false;
-      let voiceAttached = false;
-      let localDialogManagerConnected = false;
-      let voiceTokenRetry: number | null = null;
-      const clearVoiceTokenRetry = () => {
-        if (voiceTokenRetry !== null) {
-          window.clearTimeout(voiceTokenRetry);
-          voiceTokenRetry = null;
-        }
-      };
-      const queueVoiceToken = (force = false) => {
-        clearVoiceTokenRetry();
-        voiceTokenRetry = window.setTimeout(() => sendVoiceToken(force), 250);
-      };
-      const sendVoiceToken = (force = false) => {
-        if (voiceTokenSent && !force) {
-          return;
-        }
-        try {
-          speechCloud.dm_send_message({ data: { type: "voice_session", token: session.token } });
-          voiceTokenSent = true;
-          localDialogManagerConnected = true;
-        } catch {
-          voiceTokenSent = false;
-          queueVoiceToken(force);
-        }
-      };
-      const attachTimeout = window.setTimeout(() => {
-        if (!voiceAttached) {
-          stopDialTone();
-          setVoiceError("SpeechCloud se nepodařilo propojit s hlasovým dialogem.");
-          setVoiceState("error");
-        }
-      }, 15_000);
-      const handleSpeechCloudConnectionError = (message: unknown, fallback: string) => {
-        window.clearTimeout(attachTimeout);
-        stopDialTone();
-        const record = asRecord(message);
-        const detail = record?.error ?? record?.text ?? record?.reason ?? record?.status;
-        setVoiceError(detail === undefined || detail === "" ? fallback : `${fallback}: ${String(detail)}`);
-        setVoiceState("error");
-      };
-      speechCloudRef.current = speechCloud;
-      speechCloud.on("ws_connected", () => setVoiceState("connecting"));
-      speechCloud.on("ws_local_dm_connected", () => {
-        localDialogManagerConnected = true;
-        setVoiceState("connecting");
-        sendVoiceToken();
-      });
-      speechCloud.on("error_init", (message) => {
-        handleSpeechCloudConnectionError(message, "Inicializace SpeechCloudu selhala");
-      });
-      speechCloud.on("ws_error_init", (message) => {
-        handleSpeechCloudConnectionError(message, "Nepodařilo se připojit ke SpeechCloudu");
-      });
-      speechCloud.on("ws_local_dm_error_init", (message) => {
-        handleSpeechCloudConnectionError(message, "Nepodařilo se připojit k hlasovému dialogu");
-      });
-      speechCloud.on("ws_error", (message) => {
-        handleSpeechCloudConnectionError(message, "Spojení se SpeechCloudem selhalo");
-      });
-      speechCloud.on("sc_start_session", () => {
-        sendVoiceToken();
-      });
-      speechCloud.on("dm_receive_message", (message) => {
-        const record = asRecord(message);
-        const firstData = asRecord(record?.data);
-        const data = firstData?.type === "voice_status" ? firstData : asRecord(firstData?.data);
-        if (data?.state === "connecting" && !voiceAttached) {
-          localDialogManagerConnected = true;
-          sendVoiceToken(true);
-        }
-        if (data?.state === "listening") {
-          voiceAttached = true;
-          window.clearTimeout(attachTimeout);
-        }
-        handleVoiceStatus(data ?? record?.data);
-      });
-      speechCloud.on("asr_recognizing", () => {
-        stopDialTone();
-        setVoiceState("listening");
-      });
-      speechCloud.on("asr_result", (message) => {
-        const transcript = voiceTranscriptFromPayload(message);
-        if (transcript) {
-          setVoiceTranscript(transcript);
-        }
-      });
-      speechCloud.on("tts_done", () => {
-        setVoiceState((current) => (current === "speaking" ? "listening" : current));
-      });
-      speechCloud.on("ws_closed", () => {
-        window.clearTimeout(attachTimeout);
-        clearVoiceTokenRetry();
-        stopDialTone();
-        setIsVoiceMuted(false);
-        setVoiceState((current) => (current === "ended" ? current : "idle"));
-        speechCloudRef.current = null;
-      });
-      speechCloud.on("sc_error", (message) => {
-        window.clearTimeout(attachTimeout);
-        clearVoiceTokenRetry();
-        stopDialTone();
-        const record = asRecord(message);
-        setVoiceError(typeof record?.error === "string" ? record.error : "SpeechCloud chyba");
-        setVoiceState("error");
-      });
-      speechCloud.init();
-      queueVoiceToken();
-    } catch (err) {
-      stopDialTone();
-      setVoiceError(err instanceof Error ? err.message : "Spusteni hlasoveho hovoru selhalo");
-      setVoiceState("error");
-    }
-  }
-
-  async function handleEndVoiceCall() {
-    const sessionId = voiceSessionId;
-    stopDialTone();
-    setIsVoiceMuted(false);
-    speechCloudRef.current?.terminate();
-    speechCloudRef.current = null;
-    setVoiceSessionId(null);
-    setVoiceState("ended");
-    if (sessionId) {
-      try {
-        await endVoiceSession(sessionId);
-      } catch (err) {
-        setVoiceError(err instanceof Error ? err.message : "Ukonceni hlasove session selhalo");
-        setVoiceState("error");
-      }
-    }
-  }
-
-  function handleStopVoiceTts() {
-    speechCloudRef.current?.tts_stop();
-  }
-
-  function handleToggleVoiceMute() {
-    const speechCloud = speechCloudRef.current;
-    if (!speechCloud || !voiceSessionId) {
-      return;
-    }
-    const nextMuted = !isVoiceMuted;
-    speechCloud.dm_send_message({
-      data: { type: "voice_control", action: nextMuted ? "mute" : "unmute" }
-    });
-    setIsVoiceMuted(nextMuted);
-  }
-
-  function handleVoiceOverlayPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.button !== 0 || !voiceOverlayRef.current) {
-      return;
-    }
-    const bounds = voiceOverlayRef.current.getBoundingClientRect();
-    voiceOverlayDragRef.current = {
-      pointerId: event.pointerId,
-      x: event.clientX - bounds.left,
-      y: event.clientY - bounds.top
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    event.preventDefault();
-  }
-
-  function handleVoiceOverlayPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    const drag = voiceOverlayDragRef.current;
-    const overlay = voiceOverlayRef.current;
-    if (!drag || drag.pointerId !== event.pointerId || !overlay) {
-      return;
-    }
-    const margin = 8;
-    setVoiceOverlayPosition({
-      x: Math.min(Math.max(margin, event.clientX - drag.x), Math.max(margin, window.innerWidth - overlay.offsetWidth - margin)),
-      y: Math.min(Math.max(margin, event.clientY - drag.y), Math.max(margin, window.innerHeight - overlay.offsetHeight - margin))
-    });
-    event.preventDefault();
-  }
-
-  function handleVoiceOverlayPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
-    if (voiceOverlayDragRef.current?.pointerId !== event.pointerId) {
-      return;
-    }
-    voiceOverlayDragRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
     }
   }
 
@@ -1637,7 +1236,7 @@ export function App() {
       <main className="app-shell auth-shell">
         <section className="auth-panel">
           <p className="eyebrow">SP2 Assistant</p>
-          <h1>Hlasovy chat nad doklady</h1>
+          <h1>Chat nad doklady</h1>
           <form className="auth-form" onSubmit={handleAuth}>
             <label>
               Email
@@ -1742,7 +1341,7 @@ export function App() {
       <section className="workspace-panel chat-panel panel">
         <header className="chat-header">
           <div>
-            <p className="eyebrow">Ollama + SpeechCloud</p>
+            <p className="eyebrow">ReceiptChat</p>
             <h1>Chat s doklady</h1>
           </div>
           <div className="header-actions">
@@ -1752,7 +1351,7 @@ export function App() {
                 value={selectedModel}
                 onChange={(event) => setSelectedModel(event.target.value)}
                 disabled={!models.length || isSending}
-                aria-label="Ollama model"
+                aria-label="Chat model"
               >
                 {models.length ? (
                   models.map((model) => (
@@ -1765,20 +1364,6 @@ export function App() {
                 )}
               </select>
             </label>
-            <button
-              className="voice-call-button"
-              onClick={handleStartVoiceCall}
-              type="button"
-              disabled={voiceState !== "idle" && voiceState !== "ended" && voiceState !== "error"}
-              title="Spustit hlasový hovor"
-            >
-              <PhoneCall size={18} />
-              Hovor
-            </button>
-            <span className={`voice-pill ${voiceState}`} aria-live="polite">
-              <Mic size={18} />
-              {voiceLabel}
-            </span>
             {activeConversation && (
               <button
                 className="danger-button icon-button"
@@ -2151,7 +1736,63 @@ export function App() {
           </header>
 
           <form className="settings-form" onSubmit={handleSaveSettings}>
-          {inferenceConfiguration && inferenceRouting ? (
+            {user?.is_superuser && serverSettings.length ? (
+              <section className="settings-section server-settings">
+                <div className="inference-settings-head">
+                  <h2>Připojení serverů</h2>
+                  <button className="primary-button" type="button" onClick={handleSaveServers} disabled={isSavingServers}>
+                    <Save size={17} />{isSavingServers ? "Ukládám" : "Uložit servery"}
+                  </button>
+                </div>
+                <div className="server-editor-grid">
+                  {serverSettings.map((server) => (
+                    <fieldset className="server-editor" key={server.id} disabled={isSavingServers}>
+                      <legend>{server.id === "server_1" ? "Server 1" : "Server 2"}</legend>
+                      <label className="server-enabled">
+                        <input type="checkbox" checked={server.enabled} onChange={(event) => updateServer(server.id, "enabled", event.target.checked)} />
+                        Zapnuto
+                      </label>
+                      <label className="settings-field"><span>Název</span>
+                        <input value={server.name} maxLength={80} onChange={(event) => updateServer(server.id, "name", event.target.value)} />
+                      </label>
+                      <label className="settings-field"><span>URL</span>
+                        <input type="url" placeholder="http://192.168.40.201:8000" value={server.base_url} onChange={(event) => updateServer(server.id, "base_url", event.target.value)} />
+                      </label>
+                      <label className="settings-field"><span>Typ API</span>
+                        <select value={server.api_type} onChange={(event) => updateServer(server.id, "api_type", event.target.value as ServerSettings["api_type"])}>
+                          <option value="ollama">Ollama</option><option value="openai">OpenAI kompatibilní / llama.cpp</option>
+                        </select>
+                      </label>
+                      <label className="settings-field"><span>HTTP autentizace</span>
+                        <select value={server.auth_scheme} onChange={(event) => updateServer(server.id, "auth_scheme", event.target.value as ServerSettings["auth_scheme"])}>
+                          <option value="none">Žádná</option><option value="basic">Basic</option><option value="digest">Digest</option>
+                        </select>
+                      </label>
+                      {server.auth_scheme !== "none" ? <>
+                        <label className="settings-field"><span>Uživatelské jméno</span>
+                          <input autoComplete="off" value={server.username ?? ""} onChange={(event) => updateServer(server.id, "username", event.target.value || null)} />
+                        </label>
+                        <label className="settings-field"><span>Heslo</span>
+                          <div className="secret-input">
+                            <input type="password" autoComplete="new-password" placeholder={server.has_password ? "Uložené heslo" : ""} value={server.password ?? ""} onChange={(event) => updateServer(server.id, "password", event.target.value)} />
+                            <button className="ghost-button icon-button" type="button" title="Odstranit uložené heslo" aria-label={`Odstranit heslo ${server.name}`} onClick={() => updateServer(server.id, "password", "")}><Trash2 size={16} /></button>
+                          </div>
+                        </label>
+                      </> : null}
+                      {server.api_type === "openai" ? (
+                        <label className="settings-field"><span>API klíč</span>
+                          <div className="secret-input">
+                            <input type="password" autoComplete="new-password" placeholder={server.has_api_key ? "Uložený klíč" : "Volitelné"} value={server.api_key ?? ""} onChange={(event) => updateServer(server.id, "api_key", event.target.value)} />
+                            <button className="ghost-button icon-button" type="button" title="Odstranit uložený klíč" aria-label={`Odstranit API klíč ${server.name}`} onClick={() => updateServer(server.id, "api_key", "")}><Trash2 size={16} /></button>
+                          </div>
+                        </label>
+                      ) : null}
+                    </fieldset>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+          {user?.is_superuser && inferenceConfiguration && inferenceRouting ? (
             <section className="settings-section inference-settings" aria-labelledby="inference-heading">
               <div className="inference-settings-head">
                 <div>
@@ -2237,7 +1878,7 @@ export function App() {
                                   )
                                 }
                               >
-                                <option value="">Vyberte model</option>
+                                <option value="">{role.id === "embedding" ? "Vypnuto" : "Vyberte model"}</option>
                                 {server.models.map((model) => (
                                   <option key={model} value={model}>
                                     {model}
@@ -2259,7 +1900,7 @@ export function App() {
                     <span>
                       {inferenceConfiguration.reranker_enabled
                         ? "Vyberte server pro jeho zapnutí."
-                        : "Nejdříve nastavte RAG_RERANKER_MODEL v .env."}
+                        : "Nejdříve přidejte server."}
                     </span>
                   </div>
                   <select
@@ -2279,10 +1920,42 @@ export function App() {
               ) : null}
             </section>
           ) : null}
+            {user?.is_superuser && processingOptions ? (
+              <section className="settings-section">
+                <h2>OCR a zpracování</h2>
+                <label className="settings-field"><span>OCR engine</span>
+                  <select value={processingOptions.ocr_engine} onChange={(event) => updateProcessing("ocr_engine", event.target.value as ProcessingOptions["ocr_engine"])}>
+                    <option value="easyocr">EasyOCR (CPU)</option><option value="tesseract">Tesseract (CPU)</option><option value="ollama">Model na přiřazeném serveru</option>
+                  </select>
+                </label>
+                {processingOptions.ocr_engine === "ollama" ? <>
+                  <label className="settings-field"><span>OCR model</span>
+                    <select value={processingOptions.ocr_model ?? ""} onChange={(event) => updateProcessing("ocr_model", event.target.value || null)}>
+                      <option value="">Vyberte model</option>
+                      {(inferenceConfiguration?.servers.find((server) => server.id === inferenceRouting?.ocr_server_id)?.models ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
+                    </select>
+                  </label>
+                  <label className="settings-field"><span>OCR prompt</span>
+                    <textarea rows={3} value={processingOptions.ocr_prompt} onChange={(event) => updateProcessing("ocr_prompt", event.target.value)} />
+                  </label>
+                </> : null}
+                <label className="settings-field"><span>Vstup pro strukturalizaci</span>
+                  <select value={processingOptions.extraction_mode} onChange={(event) => updateProcessing("extraction_mode", event.target.value as ProcessingOptions["extraction_mode"])}>
+                    <option value="vision_hybrid">OCR text a obrázky</option><option value="text_only">Pouze OCR text</option>
+                  </select>
+                </label>
+                <div className="settings-grid">
+                  <label className="settings-field"><span>Kandidáti vyhledávání</span><input type="number" min={1} max={50} value={processingOptions.rag_search_limit} onChange={(event) => updateProcessing("rag_search_limit", Number(event.target.value))} /></label>
+                  <label className="settings-field"><span>Kandidáti rerankeru</span><input type="number" min={1} max={50} value={processingOptions.reranker_candidate_limit} onChange={(event) => updateProcessing("reranker_candidate_limit", Number(event.target.value))} /></label>
+                </div>
+                <label className="settings-field"><span>Časový limit modelů (s)</span><input type="number" min={10} max={1800} value={processingOptions.inference_timeout_seconds} onChange={(event) => updateProcessing("inference_timeout_seconds", Number(event.target.value))} /></label>
+                <button className="primary-button" type="button" onClick={handleSaveProcessing} disabled={isSavingProcessing}><Save size={17} />{isSavingProcessing ? "Ukládám" : "Uložit zpracování"}</button>
+              </section>
+            ) : null}
             <section className="settings-section">
               <div>
                 <h2>Chat</h2>
-                <p>Tento model se automaticky vybere pro textový i hlasový chat.</p>
+                <p>Tento model se automaticky vybere pro nové zprávy v chatu.</p>
               </div>
               <label className="settings-field">
                 <span>Výchozí model chatu</span>
@@ -2305,34 +1978,6 @@ export function App() {
               <div className="settings-current">
                 <span>Aktuálně uloženo</span>
                 <strong>{userSettings?.default_chat_model ?? "Výchozí model serveru"}</strong>
-              </div>
-            </section>
-            <section className="settings-section">
-              <div>
-                <h2>Hlasový hovor</h2>
-                <p>Zvolený hlas se použije pro uvítání i všechny odpovědi SpeechCloudu.</p>
-              </div>
-              <label className="settings-field">
-                <span>TTS hlas</span>
-                <select
-                  value={ttsVoice}
-                  onChange={(event) => setTtsVoice(event.target.value)}
-                  disabled={isSavingSettings}
-                >
-                  <option value="">Výchozí hlas SpeechCloudu</option>
-                  {TTS_VOICES.map((voice) => (
-                    <option key={voice.value} value={voice.value}>
-                      {voice.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div className="settings-current">
-                <span>Aktuálně uloženo</span>
-                <strong>
-                  {TTS_VOICES.find((voice) => voice.value === userSettings?.tts_voice)?.label ??
-                    "Výchozí hlas SpeechCloudu"}
-                </strong>
               </div>
             </section>
             <section className="settings-section">
@@ -2454,80 +2099,6 @@ export function App() {
           </form>
         </section>
       )}
-      {voiceSessionId || voiceState === "connecting" || voiceState === "error" ? (
-        <div
-          ref={voiceOverlayRef}
-          className="voice-overlay"
-          role="dialog"
-          aria-label="Hlasový hovor"
-          style={
-            voiceOverlayPosition
-              ? { left: voiceOverlayPosition.x, top: voiceOverlayPosition.y, right: "auto", bottom: "auto" }
-              : undefined
-          }
-        >
-          <div
-            className="voice-overlay-head"
-            onPointerDown={handleVoiceOverlayPointerDown}
-            onPointerMove={handleVoiceOverlayPointerMove}
-            onPointerUp={handleVoiceOverlayPointerUp}
-            onPointerCancel={handleVoiceOverlayPointerUp}
-          >
-            <div>
-              <p className="eyebrow">SpeechCloud hovor</p>
-              <h2>{voiceLabel}</h2>
-            </div>
-            <Mic size={22} />
-          </div>
-          <div className="voice-overlay-body">
-            <div>
-              <span>Poslední dotaz</span>
-              <strong>{voiceTranscript || "Čekám na hlasový vstup..."}</strong>
-            </div>
-            <div>
-              <span>Odpověď</span>
-              <p>{voiceAnswer || "Odpověď se zobrazí po zpracování dotazu."}</p>
-            </div>
-            {voiceSources.length ? (
-              <div className="voice-overlay-sources">
-                <span>Zdroje</span>
-                {voiceSources.map((source) => (
-                  <button key={source.document_id} type="button" onClick={() => handleOpenDocumentSource(source.document_id)}>
-                    <FileText size={14} />
-                    {source.title}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {voiceError && <p className="error-text">{voiceError}</p>}
-          </div>
-          <div className="voice-overlay-actions">
-            <button className="ghost-button" type="button" onClick={handleStopVoiceTts}>
-              Stop TTS
-            </button>
-            <button
-              className={`ghost-button icon-button voice-mute-button ${isVoiceMuted ? "active" : ""}`}
-              type="button"
-              onClick={handleToggleVoiceMute}
-              disabled={!voiceSessionId || voiceState === "connecting" || voiceState === "error"}
-              aria-label={isVoiceMuted ? "Zapnout mikrofon" : "Ztlumit mikrofon"}
-              title={isVoiceMuted ? "Zapnout mikrofon" : "Ztlumit mikrofon"}
-            >
-              {isVoiceMuted ? <MicOff size={19} /> : <Mic size={19} />}
-            </button>
-            <button
-              className="danger-button icon-button voice-end-button"
-              type="button"
-              onClick={handleEndVoiceCall}
-              aria-label="Ukončit hovor"
-              title="Ukončit hovor"
-            >
-              <PhoneOff size={19} />
-            </button>
-          </div>
-          <audio id="voice-audioout" />
-        </div>
-      ) : null}
     </main>
   );
 }

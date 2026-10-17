@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+import pytest
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -20,6 +21,14 @@ from app.services.ocr import (
 )
 
 PASSWORD = "StrongPass123"
+
+
+@pytest.fixture(autouse=True)
+def mock_default_model_discovery(monkeypatch):
+    async def fake_models(self):
+        return [{"name": "phi4", "selected": True}]
+
+    monkeypatch.setattr("app.services.ollama.OllamaClient.list_models", fake_models)
 
 
 def _register_and_login(client: TestClient, email: str) -> None:

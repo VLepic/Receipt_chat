@@ -17,8 +17,10 @@ from app.core.config import settings
 from app.models.document import Document, DocumentFile, DocumentStatus, OcrResult
 from app.models.job import JobKind, JobStatus, ProcessingJob
 from app.services.ollama_auth import ollama_auth
-from app.services.inference_routing import get_role_server
+from app.services.inference_routing import get_role_server, get_processing_options, legacy_processing_options
+from app.schemas.processing import ProcessingOptions
 from app.services.ollama_servers import OllamaServerConfig, get_ollama_server
+from app.services.openai_compatible import api_headers, api_url, chat_content, chat_payload
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,9 @@ class OcrEngine:
 
 
 class MultiFileOcrEngine(OcrEngine):
+    def __init__(self, options: ProcessingOptions | None = None) -> None:
+        self.options = options or legacy_processing_options()
+
     def extract(self, document: Document) -> ExtractedText:
         files = list(getattr(document, "files", []) or [])
         if not files:
@@ -227,7 +232,8 @@ class EasyOcrEngine(MultiFileOcrEngine):
 class OllamaOcrEngine(MultiFileOcrEngine):
     engine_name = "ollama"
 
-    def __init__(self, server: OllamaServerConfig | None = None) -> None:
+    def __init__(self, server: OllamaServerConfig | None = None, options: ProcessingOptions | None = None) -> None:
+        super().__init__(options)
         self.server = server or get_ollama_server("server_1")
 
     def extract(self, document: Document) -> ExtractedText:
@@ -236,10 +242,10 @@ class OllamaOcrEngine(MultiFileOcrEngine):
             extracted,
             metadata_json={
                 **extracted.metadata_json,
-                "ollama_model": settings.ollama_ocr_model,
-                "ollama_prompt": settings.ollama_ocr_prompt,
+                "ollama_model": self.options.ocr_model,
+                "ollama_prompt": self.options.ocr_prompt,
             },
-            engine=f"ollama:{settings.ollama_ocr_model}",
+            engine=f"ollama:{self.options.ocr_model}",
         )
 
     def _extract_file(self, document_file: DocumentFile) -> tuple[str, int]:
@@ -267,19 +273,26 @@ class OllamaOcrEngine(MultiFileOcrEngine):
     def _run_ollama_ocr(self, path: Path) -> str:
         image_payload = base64.b64encode(path.read_bytes()).decode("ascii")
         payload = {
-            "model": settings.ollama_ocr_model,
+            "model": self.options.ocr_model,
             "stream": False,
             "messages": [
                 {
                     "role": "user",
-                    "content": settings.ollama_ocr_prompt,
+                    "content": self.options.ocr_prompt,
                     "images": [image_payload],
                 }
             ],
         }
+        endpoint = f"{self.server.base_url}/api/chat"
+        if self.server.api_type == "openai":
+            endpoint = api_url(self.server, "chat/completions")
+            payload = chat_payload(payload["messages"], self.options.ocr_model)
         try:
-            with httpx.Client(timeout=settings.ollama_ocr_timeout_seconds, auth=self._auth()) as client:
-                response = client.post(f"{self.server.base_url}/api/chat", json=payload)
+            options = {"timeout": self.options.inference_timeout_seconds, "auth": self._auth()}
+            if self.server.api_type == "openai":
+                options["headers"] = api_headers(self.server)
+            with httpx.Client(**options) as client:
+                response = client.post(endpoint, json=payload)
                 response.raise_for_status()
                 data = response.json()
         except httpx.TimeoutException as exc:
@@ -287,7 +300,7 @@ class OllamaOcrEngine(MultiFileOcrEngine):
         except httpx.HTTPError as exc:
             raise RuntimeError("Ollama OCR server error") from exc
 
-        content = data.get("message", {}).get("content")
+        content = chat_content(data) if self.server.api_type == "openai" else data.get("message", {}).get("content")
         if not content or not content.strip():
             raise ValueError("Ollama OCR returned empty text")
         return content.strip()
@@ -296,14 +309,15 @@ class OllamaOcrEngine(MultiFileOcrEngine):
         return ollama_auth(self.server)
 
 
-def create_ocr_engine(server: OllamaServerConfig | None = None) -> OcrEngine:
-    engine_name = settings.ocr_engine.strip().lower()
+def create_ocr_engine(server: OllamaServerConfig | None = None, options: ProcessingOptions | None = None) -> OcrEngine:
+    options = options or legacy_processing_options()
+    engine_name = options.ocr_engine
     if engine_name == "easyocr":
-        return EasyOcrEngine()
+        return EasyOcrEngine(options)
     if engine_name == "tesseract":
-        return TesseractOcrEngine()
+        return TesseractOcrEngine(options)
     if engine_name == "ollama":
-        return OllamaOcrEngine(server)
+        return OllamaOcrEngine(server, options)
     raise ValueError(f"Unsupported OCR engine: {settings.ocr_engine}")
 
 
@@ -338,7 +352,9 @@ async def process_ocr_job(
 
     try:
         if engine is None:
-            engine = create_ocr_engine(await get_role_server(session, "ocr"))
+            options = await get_processing_options(session)
+            server = await get_role_server(session, "ocr") if options.ocr_engine == "ollama" else None
+            engine = create_ocr_engine(server, options)
         extracted = engine.extract(document)
         existing_result = await session.execute(
             select(OcrResult).where(OcrResult.document_id == document.id, OcrResult.user_id == document.user_id)

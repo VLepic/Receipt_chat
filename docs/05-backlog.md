@@ -42,17 +42,6 @@
 - Timeouty a srozumitelne chybove odpovedi.
 - Logovani modelu pouziteho pro odpoved.
 
-## Epic: SpeechCloud integrace
-
-- Prostudovat `docs/SpeechCloud.dialog.md`.
-- Vyuzit `example/dialog.py` jako knihovni zaklad nebo referencni implementaci.
-- Vyuzit `example/example_cviceni_chat.py` jako ukazku flow ASR -> Ollama -> TTS.
-- Presunout pristupove udaje do `.env` a nikdy je nedrzet natvrdo v kodu.
-- Vytvorit `speech-dialog` kontejner pro Docker Compose.
-- Nastavit WebSocket endpoint dialog manageru.
-- Nastavit staticky SpeechCloud HTML klient nebo napojeni na vlastni frontend.
-- Logovat SpeechCloud session id a chyby ASR/TTS.
-
 ## Epic: dokumenty pro budoucí fáze
 
 - Navrhnout tabulku `documents`.
@@ -82,5 +71,4 @@
 5. Implementovat jednoduchy chat endpoint bez perzistence.
 6. Pridat databazi a migrace.
 7. Pridat uzivatele, konverzace a zpravy.
-8. Zprovoznit SpeechCloud dialog manager podle `example/example_cviceni_chat.py`.
-9. Napojit frontend na realne API.
+8. Napojit frontend na realne API.
