@@ -9,12 +9,6 @@ dist/
 coverage/
 storage/
 example/
-!example/
-example/*
-!example/dialog.py
-!example/static/
-example/static/*
-!example/static/index.html
 /docs/10-referat-hlasove-dialogove-systemy.md
 /rag.ipynb
 /.env.production

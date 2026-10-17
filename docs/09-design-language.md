@@ -11,7 +11,7 @@ Lokální reference `http://127.0.0.1:4173/` ma title `WaWoD Studio` a pouziva t
 
 ## Charakter
 
-Rozhrani ma pusobit jako seriozni pracovni aplikace pro hlasovy chat, dokumenty, OCR a pozdejsi RAG. Ne jako marketingova landing page.
+Rozhrani ma pusobit jako seriozni pracovni aplikace pro textovy chat, dokumenty, OCR a RAG. Ne jako marketingova landing page.
 
 Klicove vlastnosti:
 
@@ -107,31 +107,15 @@ Aktualni obrazovky:
 
 - login/registrace;
 - hlavni chat;
-- plovouci hlasovy overlay;
 - seznam konverzaci;
-- nastaveni modelu, TTS hlasu, RAG zdroju a Ollama serveru;
+- nastaveni modelu, RAG zdroju a inference serveru;
 - dokumenty, upload, OCR, strukturovany JSON a nahled souboru.
 
 Layout ma byt spise aplikacni:
 
 - levy panel pro konverzace/dokumenty;
 - hlavni plocha pro chat;
-- plovouci panel pro stav hlasu, posledni rozpoznanou vetu a ovladani hovoru;
-- status line pro SpeechCloud/Ollama stav;
 - bez marketingoveho hero bloku.
-
-## Hlasovy UI stav
-
-SpeechCloud integrace musi mit jasne vizualni stavy:
-
-- `idle`
-- `listening`
-- `recognizing`
-- `thinking`
-- `speaking`
-- `error`
-
-Stavy maji byt viditelne jako status pill nebo kompaktni panel. Nesmí prekryvat hlavni chat.
 
 ## Implementacni pravidla
 
@@ -148,7 +132,6 @@ Pri frontend zmenach kontrolovat:
 
 - screenshot login obrazovky;
 - screenshot hlavniho chat UI;
-- screenshot hlasoveho stavu;
 - mobilni sirku;
 - kontrast textu na tmavem pozadi;
 - vizualni podobnost s referencemi.

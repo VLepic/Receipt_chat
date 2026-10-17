@@ -136,18 +136,7 @@ def _parse_agent_command(text: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _speech_style_instruction(response_mode: str) -> str:
-    if response_mode != "speech":
-        return ""
-    return (
-        " Odpoved bude prectena nahlas. Odpovez strucnou a prirozenou cestinou, nejvyse tremi vetami. "
-        "Nepouzivej markdown, odrazky, zavorkova metadata, interni nazvy poli, technicke kody, UUID, "
-        "document_id ani oznaceni jako Doklad: receipt. Uprednostni uzivatelsky srozumitelny nazev, "
-        "odpovez pouze na polozenou otazku a necituj zdroje; aplikace je zobrazi samostatne."
-    )
-
-
-def _agent_decision_messages(history: list[dict], content: str, response_mode: str = "chat") -> list[dict]:
+def _agent_decision_messages(history: list[dict], content: str) -> list[dict]:
     recent_history = history[-6:]
     return [
         {
@@ -165,7 +154,7 @@ def _agent_decision_messages(history: list[dict], content: str, response_mode: s
                 "Konkretní fakta z dokladu nikdy neodpovidej pouze z historie nebo pameti; nejdriv si vyzadej hledani, aby backend mohl pripojit zdroje. "
                 "U navazujících dotazů použij historii pro vytvoření samostatných hledacích textů. "
                 "Nevymýšlej údaje z dokladů bez výsledků hledání."
-            ) + _speech_style_instruction(response_mode),
+            ),
         },
         *recent_history,
         {"role": "user", "content": content},
@@ -231,14 +220,12 @@ def _final_messages(
     content: str,
     rag_context: str,
     retrieval: dict[str, object],
-    response_mode: str = "chat",
 ) -> list[dict]:
     system_content = (
         "Odpovidej přirozeně česky. "
         "Syrova UUID ani document_id nikdy neopisuj do textu odpovedi, pokud se na ne uzivatel primo nepta. "
         "Backend relevantni doklady zobrazi jako klikatelne zdroje pod odpovedi."
     )
-    system_content += _speech_style_instruction(response_mode)
     if rag_context:
         system_content = (
             f"{rag_context}\n\n"
@@ -264,7 +251,6 @@ async def generate_chat_agent_response(
     model: str,
     conversation_id: uuid.UUID | None = None,
     client: OllamaClient | None = None,
-    response_mode: str = "chat",
 ) -> ChatAgentResult:
     llm_client = client or OllamaClient()
     logger.info(
@@ -276,7 +262,7 @@ async def generate_chat_agent_response(
         log_preview(content, 240),
     )
     decision_text = await llm_client.chat(
-        _agent_decision_messages(history, content, response_mode),
+        _agent_decision_messages(history, content),
         model=model,
     )
     logger.info(
@@ -331,7 +317,7 @@ async def generate_chat_agent_response(
         if relevant_chunks:
             rag_context = build_chat_context(relevant_chunks)
             assistant_text = await llm_client.chat(
-                _final_messages(history, content, rag_context, retrieval, response_mode),
+                _final_messages(history, content, rag_context, retrieval),
                 model=model,
             )
             logger.info("agent final answer conversation_id=%s response=%r", conversation_id, log_preview(assistant_text))

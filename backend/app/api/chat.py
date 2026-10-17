@@ -22,7 +22,7 @@ from app.schemas.chat import (
     OllamaModelRead,
 )
 from app.services.chat_agent import generate_chat_agent_response
-from app.services.inference_routing import get_role_server
+from app.services.inference_routing import get_role_server, get_processing_options
 from app.services.ollama import OllamaClient
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -96,11 +96,12 @@ async def append_chat_message_pair(
     user: User,
     content: str,
     model: str | None = None,
-    response_mode: str = "chat",
 ) -> tuple[Conversation, Message, Message]:
     user_settings = await get_user_settings(user.id, session)
     selected_model = model or user_settings.default_chat_model or settings.ollama_model
-    chat_client = OllamaClient(await get_role_server(session, "chat"))
+    options = await get_processing_options(session)
+    chat_client = OllamaClient(await get_role_server(session, "chat"), timeout=options.inference_timeout_seconds)
+    selected_model = await chat_client.resolve_model(selected_model or None)
 
     await session.execute(select(Conversation.id).where(Conversation.id == conversation.id).with_for_update())
     history_result = await session.execute(
@@ -144,7 +145,6 @@ async def append_chat_message_pair(
         model=selected_model,
         conversation_id=conversation.id,
         client=chat_client,
-        response_mode=response_mode,
     )
     assistant_message = Message(
         conversation_id=conversation.id,

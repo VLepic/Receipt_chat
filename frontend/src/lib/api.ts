@@ -32,6 +32,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
 export type User = {
   id: string;
   email: string;
+  is_superuser: boolean;
   display_name?: string | null;
 };
 
@@ -71,18 +72,6 @@ export type ConversationDetail = Conversation & {
   messages: Message[];
 };
 
-export type VoiceSessionCreateResponse = {
-  voice_session_id: string;
-  token: string;
-  conversation: ConversationDetail;
-  expires_at: string;
-};
-
-export type VoiceSessionEndResponse = {
-  voice_session_id: string;
-  status: string;
-};
-
 export type OllamaModel = {
   name: string;
   selected: boolean;
@@ -112,13 +101,38 @@ export type InferenceConfiguration = {
   servers: InferenceServer[];
   routing: InferenceRouting;
   reranker_enabled: boolean;
+  processing: ProcessingOptions;
+  server_settings: ServerSettings[];
+};
+
+export type ServerSettings = {
+  id: "server_1" | "server_2";
+  name: string;
+  enabled: boolean;
+  base_url: string;
+  api_type: "ollama" | "openai";
+  auth_scheme: "none" | "basic" | "digest";
+  username: string | null;
+  has_password: boolean;
+  has_api_key: boolean;
+  password?: string;
+  api_key?: string;
+};
+
+export type ProcessingOptions = {
+  ocr_engine: "easyocr" | "tesseract" | "ollama";
+  ocr_model: string | null;
+  ocr_prompt: string;
+  extraction_mode: "vision_hybrid" | "text_only";
+  rag_search_limit: number;
+  reranker_candidate_limit: number;
+  inference_timeout_seconds: number;
 };
 
 export type UserSettings = {
   id: string;
   user_id: string;
   default_chat_model: string | null;
-  tts_voice: string | null;
   ocr_processing_model: string | null;
   rag_source_strategy: "best_band" | "top_n";
   rag_best_band: number;
@@ -295,7 +309,7 @@ export async function getInferenceConfiguration() {
   return api<InferenceConfiguration>("/inference");
 }
 
-export async function updateInferenceConfiguration(routing: InferenceRouting) {
+export async function updateInferenceConfiguration(routing: InferenceRouting & { processing?: ProcessingOptions }) {
   return api<InferenceConfiguration>("/inference", {
     method: "PUT",
     json: routing
@@ -306,9 +320,16 @@ export async function getUserSettings() {
   return api<UserSettings>("/settings");
 }
 
+export async function updateProcessingOptions(options: ProcessingOptions) {
+  return api<ProcessingOptions>("/inference/processing", { method: "PUT", json: options });
+}
+
+export async function updateInferenceServers(servers: ServerSettings[]) {
+  return api<InferenceConfiguration>("/inference/servers", { method: "PUT", json: servers });
+}
+
 export async function updateUserSettings(payload: {
   default_chat_model: string | null;
-  tts_voice: string | null;
   ocr_processing_model: string | null;
   rag_source_strategy: "best_band" | "top_n";
   rag_best_band: number;
@@ -330,17 +351,4 @@ export async function sendMessage(conversationId: string, content: string, model
       json: { content, model }
     }
   );
-}
-
-export async function createVoiceSession(conversationId?: string | null) {
-  return api<VoiceSessionCreateResponse>("/voice/sessions", {
-    method: "POST",
-    json: { conversation_id: conversationId ?? null }
-  });
-}
-
-export async function endVoiceSession(voiceSessionId: string) {
-  return api<VoiceSessionEndResponse>(`/voice/sessions/${voiceSessionId}/end`, {
-    method: "POST"
-  });
 }

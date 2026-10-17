@@ -90,4 +90,4 @@ Qdrant zustava planovana alternativa pro skalovani a pokrocily retrieval.
 
 Prvni implementace pouziva tabulku `document_chunks` v PostgreSQL s pgvector sloupcem `embedding`. Chunk je zatim jeden na doklad a obsahuje deterministicky slozeny `rag_text`: summary, dulezita strukturovana pole a polozky. Cely OCR text se do embeddingu nedava, aby se neoslaboval vyznam dotazu dlouhym sumem a pravnimi patickami.
 
-Embedding model je konfigurovany pres `RAG_EMBEDDING_MODEL`; v Docker Compose je vychozi `qwen3-embedding:latest`.
+Embedding model se vybira v nastaveni aplikace ze seznamu na prirazenem serveru. Vychozi instalace nespousti zadny model automaticky. Po zmene embedding modelu je nutne dokumenty znovu indexovat.

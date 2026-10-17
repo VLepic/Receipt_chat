@@ -11,7 +11,6 @@ class UserSettingsRead(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
     default_chat_model: str | None
-    tts_voice: str | None
     ocr_processing_model: str | None
     rag_source_strategy: RagSourceStrategy
     rag_best_band: float
@@ -24,7 +23,6 @@ class UserSettingsRead(BaseModel):
 
 class UserSettingsUpdate(BaseModel):
     default_chat_model: str | None = Field(default=None, max_length=120)
-    tts_voice: str | None = Field(default=None, max_length=120)
     ocr_processing_model: str | None = Field(default=None, max_length=120)
     rag_source_strategy: RagSourceStrategy = "best_band"
     rag_best_band: float = Field(default=0.08, ge=0.0, le=1.0)

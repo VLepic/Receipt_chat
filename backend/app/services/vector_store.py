@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.document import Document
 from app.services.ollama import OllamaClient
-from app.services.inference_routing import get_or_create_inference_routing
-from app.services.ollama_servers import get_ollama_server
+from app.services.inference_routing import get_or_create_inference_routing, processing_options
+from app.services.ollama_servers import get_routing_server
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +61,13 @@ async def index_document_rag_text(
         if not await _document_chunks_table_exists(session):
             return False
         routing = await get_or_create_inference_routing(session)
-        embedding_model = routing.embedding_model or settings.rag_embedding_model
+        embedding_model = routing.embedding_model
         if not embedding_model:
             return False
-        embedding_client = client or OllamaClient(get_ollama_server(routing.embedding_server_id))
+        options = processing_options(routing)
+        embedding_client = client or OllamaClient(
+            get_routing_server(routing, routing.embedding_server_id), timeout=options.inference_timeout_seconds
+        )
         embedding = await embedding_client.embed(rag_text, model=embedding_model)
         if not embedding:
             return False
@@ -112,10 +115,13 @@ async def search_document_chunks(
         if not await _document_chunks_table_exists(session):
             return []
         routing = await get_or_create_inference_routing(session)
-        embedding_model = routing.embedding_model or settings.rag_embedding_model
+        embedding_model = routing.embedding_model
         if not embedding_model:
             return []
-        embedding_client = client or OllamaClient(get_ollama_server(routing.embedding_server_id))
+        options = processing_options(routing)
+        embedding_client = client or OllamaClient(
+            get_routing_server(routing, routing.embedding_server_id), timeout=options.inference_timeout_seconds
+        )
         embedding = await embedding_client.embed(query, model=embedding_model)
         if not embedding:
             return []
@@ -144,9 +150,9 @@ async def search_document_chunks(
                 "user_id": user_id,
                 "embedding": _vector_literal(embedding),
                 "limit": limit or (
-                    settings.rag_reranker_candidate_limit
-                    if routing.reranker_model or settings.rag_reranker_model
-                    else settings.rag_search_limit
+                    options.reranker_candidate_limit
+                    if routing.reranker_model and routing.reranker_server_id
+                    else options.rag_search_limit
                 ),
             },
         )
@@ -182,12 +188,14 @@ async def search_document_structured(
         return []
 
     where_terms = " AND ".join(f"de.structured_json::text ILIKE :term_{index}" for index in range(len(terms)))
+    routing = await get_or_create_inference_routing(session)
+    options = processing_options(routing)
     params = {
         "user_id": user_id,
         "limit": limit or (
-            settings.rag_reranker_candidate_limit
-            if settings.rag_reranker_model
-            else settings.rag_search_limit
+            options.reranker_candidate_limit
+            if routing.reranker_model and routing.reranker_server_id
+            else options.rag_search_limit
         ),
         **{f"term_{index}": f"%{term}%" for index, term in enumerate(terms)},
     }

@@ -2,7 +2,8 @@ services:
   backend-test:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: Dockerfile
+      target: test
     environment:
       DATABASE_URL: postgresql+asyncpg://sp2:sp2@postgres-test:5432/sp2_test
       SECRET_KEY: test-secret
